@@ -19,7 +19,7 @@ resource "aws_ecs_task_definition" "chaos_pilot" {
   container_definitions = jsonencode([
     {
       name      = "chaos-pilot-app"
-      image     = "nginx:alpine"
+      image     = var.app_image
       essential = true
 
       portMappings = [
@@ -64,6 +64,12 @@ resource "aws_ecs_service" "chaos_pilot" {
     target_group_arn = aws_lb_target_group.chaos_pilot.arn
     container_name   = "chaos-pilot-app"
     container_port   = 80
+  }
+
+  # Chaos-Pilot registers new revisions and rolls back during experiments.
+  # Terraform only sets the initial revision so it doesn't fight those changes.
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 
   tags = {

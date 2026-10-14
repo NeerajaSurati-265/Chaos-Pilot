@@ -113,7 +113,10 @@ class Incident:
 
     def __post_init__(self):
         if not self.timeline:
-            self.timeline.append(TimelineEvent(self.state, utc_now(), "Failure injected"))
+            self.timeline.append(TimelineEvent(self.state, utc_now(), "Incident opened"))
+
+    def add_note(self, note: str):
+        self.timeline.append(TimelineEvent(self.state, utc_now(), note))
 
     def transition(self, new_state: IncidentState, note: str = ""):
         if self.state in TERMINAL_STATES:
@@ -139,9 +142,14 @@ class Incident:
 
     @property
     def recovery_seconds(self) -> float | None:
+        # Measured from detection to verified recovery.
         if self.state is not IncidentState.RESOLVED:
             return None
-        return (self.timeline[-1].at - self.timeline[0].at).total_seconds()
+        detected = next(
+            (e.at for e in self.timeline if e.state is IncidentState.DETECTED),
+            self.timeline[0].at,
+        )
+        return (self.timeline[-1].at - detected).total_seconds()
 
     def report(self) -> dict:
         return {

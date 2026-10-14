@@ -45,3 +45,14 @@ variable "second_availability_zone" {
   type        = string
   default     = "ap-south-1b"
 }
+variable "app_image" {
+  description = "Container image for the test workload. Set to the test app in ECR once it is pushed."
+  type        = string
+  default     = "nginx:alpine"
+}
+
+variable "health_check_path" {
+  description = "ALB health check path. Use /health with the test app."
+  type        = string
+  default     = "/"
+}
