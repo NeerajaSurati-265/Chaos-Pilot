@@ -19,9 +19,10 @@ Early MVP. What exists today:
 - The deterministic policy engine (`chaos_pilot/policy`): decides AUTO, HUMAN_APPROVAL or DENY from an allow-list of actions, their reversibility and blast radius, the AI's confidence and the kill switch.
 - The pipeline (`chaos_pilot/core/pipeline.py`) that runs a scenario end to end, including waiting for human approval with a timeout.
 - The **Bad Deployment** scenario (`chaos_pilot/scenarios/bad_deployment.py`).
+- The **Configuration Change** scenario (`chaos_pilot/scenarios/config_change.py`).
 - A rule-based investigator (`chaos_pilot/investigator`) standing in for the AI investigator. It returns the same diagnosis shape a model would, so a model-backed one can replace it later.
 
-Configuration Change, Dependency Failure, Cascading Failure and the dashboard are not built yet.
+Dependency Failure, Cascading Failure and the dashboard are not built yet.
 
 ## Repository layout
 
@@ -93,13 +94,15 @@ The app uses your normal AWS credentials (`AWS_PROFILE` or environment variables
 | `CHAOS_PILOT_CLUSTER` | `chaos-pilot-cluster` | ECS cluster experiments may target. |
 | `CHAOS_PILOT_SERVICE` | `chaos-pilot-service` | Only tasks of this service may be stopped. |
 | `CHAOS_PILOT_TARGET_GROUP_ARN` | none | ALB target group used for health checks. `terraform output -raw target_group_arn` |
+| `CHAOS_PILOT_ECS_SECURITY_GROUP_ID` | none | ECS tasks' security group, for Configuration Change. `terraform output -raw ecs_security_group_id` |
+| `CHAOS_PILOT_ALB_SECURITY_GROUP_ID` | none | ALB's security group, for Configuration Change. `terraform output -raw alb_security_group_id` |
 
 Endpoints:
 
 - `GET /health` reports API health.
 - `GET /status` reports engine status and whether experiments are enabled.
 - `POST /experiments/task-failure?task_id=<id>` stops one task of the test service. It returns `403` if experiments are disabled or the task is not part of the allowed service.
-- `POST /scenarios/bad-deployment` starts the Bad Deployment scenario in the background and returns the incident ID. Only one scenario runs at a time.
+- `POST /scenarios/bad-deployment` or `POST /scenarios/config-change` starts that scenario in the background and returns the incident ID. Only one scenario runs at a time.
 - `GET /incidents` and `GET /incidents/<id>` return incident reports: signals, diagnosis, policy decision and reasons, remediation, verification checks, recovery time and timeline.
 - `POST /incidents/<id>/approve` and `POST /incidents/<id>/reject` answer an incident waiting for human approval.
 
@@ -113,7 +116,19 @@ Endpoints:
 6. **Verify:** passes only when the service runs the known-good revision, the rollout is complete, running tasks match the desired count and every ALB target is healthy.
 7. **Cleanup:** always makes sure the service is back on the known-good revision and deregisters the bad one, even if a step failed.
 
-The AWS identity running the API needs `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DeregisterTaskDefinition`, `ecs:UpdateService`, `ecs:DescribeTasks`, `ecs:StopTask`, `elasticloadbalancing:DescribeTargetHealth`, and `iam:PassRole` on the task execution role.
+## Configuration Change scenario
+
+1. **Inject:** checks the rule letting the ALB reach the tasks on port 80 exists (it refuses to start otherwise), then removes it.
+2. **Detect:** polls until ALB targets turn unhealthy, and records whether the rule is present.
+3. **Investigate:** with no new deployment and the rule missing, the investigator recommends `restore_security_group_rule`.
+4. **Policy:** security-group changes always need **human approval**. The incident waits in AWAITING_APPROVAL until `POST /incidents/<id>/approve` or `/reject`, or fails after the approval timeout (15 minutes).
+5. **Remediate:** re-adds the exact rule that was removed.
+6. **Verify:** passes only when the rule is back, running tasks match the desired count and every ALB target is healthy.
+7. **Cleanup:** always re-adds the rule if it is still missing, including after a rejection or failure.
+
+## AWS permissions
+
+The AWS identity running the API needs `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:DeregisterTaskDefinition`, `ecs:UpdateService`, `ecs:DescribeTasks`, `ecs:StopTask`, `elasticloadbalancing:DescribeTargetHealth`, `iam:PassRole` on the task execution role, and for Configuration Change `ec2:DescribeSecurityGroups`, `ec2:RevokeSecurityGroupIngress` and `ec2:AuthorizeSecurityGroupIngress` on the ECS security group.
 
 ## Tests
 
