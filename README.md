@@ -15,14 +15,18 @@ Early MVP. What exists today:
 
 - Terraform for the test environment: VPC across two availability zones, public and private subnets, an ALB, an ECS Fargate service (2 tasks) and a NAT instance.
 - A FastAPI app with a task-failure experiment that stops one ECS task of the test service.
+- The incident model and lifecycle (`chaos_pilot/incidents`): every step from INJECTED to RESOLVED is recorded on a timeline, steps can't be skipped, and failures are recorded as FAILED rather than hidden.
+- The deterministic policy engine (`chaos_pilot/policy`): decides AUTO, HUMAN_APPROVAL or DENY from an allow-list of actions, their reversibility and blast radius, the AI's confidence and the kill switch.
 
-Detection, the AI investigator, the policy engine, remediation, verification and the dashboard are not built yet.
+Detection, the AI investigator, remediation, verification and the dashboard are not built yet.
 
 ## Repository layout
 
 ```
 app/main.py                          FastAPI entry point
 chaos_pilot/core/engine.py           Chaos engine and kill switch
+chaos_pilot/incidents/               Incident model, lifecycle and in-memory store
+chaos_pilot/policy/                  Deterministic policy engine
 chaos_pilot/experiments/             Failure experiments
 terraform/                           Test environment infrastructure
 tests/                               Unit tests (AWS calls are stubbed)
