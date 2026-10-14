@@ -11,6 +11,7 @@ from chaos_pilot.incidents.store import IncidentStore
 from chaos_pilot.investigator.rule_based import RuleBasedInvestigator
 from chaos_pilot.policy.engine import PolicyEngine
 from chaos_pilot.scenarios.bad_deployment import BadDeploymentScenario
+from chaos_pilot.scenarios.config_change import ConfigChangeScenario
 
 DEFAULT_CLUSTER_NAME = "chaos-pilot-cluster"
 DEFAULT_SERVICE_NAME = "chaos-pilot-service"
@@ -32,6 +33,8 @@ class ChaosEngine:
         self.cluster = os.getenv("CHAOS_PILOT_CLUSTER", DEFAULT_CLUSTER_NAME)
         self.service = os.getenv("CHAOS_PILOT_SERVICE", DEFAULT_SERVICE_NAME)
         self.target_group_arn = os.getenv("CHAOS_PILOT_TARGET_GROUP_ARN", "")
+        self.ecs_security_group_id = os.getenv("CHAOS_PILOT_ECS_SECURITY_GROUP_ID", "")
+        self.alb_security_group_id = os.getenv("CHAOS_PILOT_ALB_SECURITY_GROUP_ID", "")
 
         self.task_failure = task_failure or TaskFailureExperiment(
             cluster_name=self.cluster,
@@ -47,6 +50,7 @@ class ChaosEngine:
         self.store = self.pipeline.store
         self.scenario_factories = scenario_factories or {
             "bad-deployment": self._bad_deployment,
+            "config-change": self._config_change,
         }
         # Only one experiment runs at a time against the test service.
         self._running = threading.Lock()
@@ -58,6 +62,24 @@ class ChaosEngine:
             cluster=self.cluster,
             service=self.service,
             target_group_arn=self.target_group_arn,
+        )
+
+    def _config_change(self):
+        missing = [
+            name for name, value in (
+                ("CHAOS_PILOT_TARGET_GROUP_ARN", self.target_group_arn),
+                ("CHAOS_PILOT_ECS_SECURITY_GROUP_ID", self.ecs_security_group_id),
+                ("CHAOS_PILOT_ALB_SECURITY_GROUP_ID", self.alb_security_group_id),
+            ) if not value
+        ]
+        if missing:
+            raise ExperimentNotAllowed(f"Not set: {', '.join(missing)}")
+        return ConfigChangeScenario(
+            cluster=self.cluster,
+            service=self.service,
+            target_group_arn=self.target_group_arn,
+            ecs_security_group_id=self.ecs_security_group_id,
+            alb_security_group_id=self.alb_security_group_id,
         )
 
     def get_status(self):
