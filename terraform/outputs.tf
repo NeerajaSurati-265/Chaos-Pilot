@@ -12,3 +12,13 @@ output "test_app_repository_url" {
   description = "Push the test app image here"
   value       = aws_ecr_repository.test_app.repository_url
 }
+
+output "ecs_security_group_id" {
+  description = "Set as CHAOS_PILOT_ECS_SECURITY_GROUP_ID for the API"
+  value       = aws_security_group.ecs.id
+}
+
+output "alb_security_group_id" {
+  description = "Set as CHAOS_PILOT_ALB_SECURITY_GROUP_ID for the API"
+  value       = aws_security_group.alb.id
+}

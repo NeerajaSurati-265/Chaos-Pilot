@@ -33,6 +33,24 @@ class RuleBasedInvestigator:
                 recommended_action="rollback_to_previous_revision",
             )
 
+        if (
+            by_name.get("alb_ingress_rule_present") is False
+            and by_name.get("unhealthy_targets", 0) > 0
+        ):
+            return Diagnosis(
+                likely_cause=(
+                    "The security group "
+                    f"{by_name.get('security_group_id')} no longer allows traffic "
+                    "from the load balancer, so health checks can't reach the tasks."
+                ),
+                confidence=0.85,
+                explanation=(
+                    "Targets turned unhealthy with no new deployment, and the "
+                    "ALB-to-ECS ingress rule is missing."
+                ),
+                recommended_action="restore_security_group_rule",
+            )
+
         return Diagnosis(
             likely_cause="Unclear from the available evidence.",
             confidence=0.3,
