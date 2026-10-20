@@ -26,7 +26,7 @@ resource "aws_lb_target_group" "chaos_pilot" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = var.health_check_path
     protocol            = "HTTP"
     port                = "traffic-port"
     healthy_threshold   = 2
