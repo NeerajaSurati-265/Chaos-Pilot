@@ -1,0 +1,8 @@
+FROM python:3.12-alpine
+WORKDIR /app
+COPY app.py .
+ARG HEALTHY=true
+ARG APP_VERSION=dev
+ENV HEALTHY=$HEALTHY APP_VERSION=$APP_VERSION
+EXPOSE 80
+CMD ["python", "app.py"]
