@@ -5,6 +5,8 @@ from botocore.stub import Stubber
 from chaos_pilot.incidents.models import Decision
 from chaos_pilot.investigator.rule_based import RuleBasedInvestigator
 from chaos_pilot.policy.engine import PolicyEngine
+from chaos_pilot.remediation.engine import RemediationContext
+from chaos_pilot.remediation.executors import RestoreSecurityGroupRule
 from chaos_pilot.scenarios.config_change import ConfigChangeScenario
 
 CLUSTER = "chaos-pilot-cluster"
@@ -89,6 +91,9 @@ def test_inject_removes_the_alb_rule(clients, scenario):
     scenario.inject()
 
     assert scenario.rule_removed
+    assert scenario.remediation_context() == RemediationContext(
+        security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80
+    )
 
 
 def test_inject_refuses_when_rule_already_missing(clients, scenario):
@@ -114,7 +119,7 @@ def test_detection_leads_to_approval_required_restore(clients, scenario):
 
 
 def test_restore_and_verify(clients, scenario):
-    (_, ec2_stub), (_, ecs_stub), (_, elb_stub) = clients
+    (ec2, ec2_stub), (_, ecs_stub), (_, elb_stub) = clients
     ec2_stub.add_response(
         "authorize_security_group_ingress", {"Return": True},
         {"GroupId": ECS_SG, "IpPermissions": [PERMISSION]},
@@ -123,18 +128,8 @@ def test_restore_and_verify(clients, scenario):
     expect_service(ecs_stub, running=2)
     expect_rule(ec2_stub, True)
 
-    scenario.remediate("restore_security_group_rule")
+    RestoreSecurityGroupRule(ec2_client=ec2).execute(scenario.remediation_context())
     assert scenario.verify().passed
-
-
-def test_restore_tolerates_rule_already_present(clients, scenario):
-    (_, ec2_stub), _, _ = clients
-    ec2_stub.add_client_error(
-        "authorize_security_group_ingress",
-        service_error_code="InvalidPermission.Duplicate",
-    )
-
-    scenario.remediate("restore_security_group_rule")
 
 
 def test_cleanup_restores_rule_if_still_removed(clients, scenario):
@@ -150,6 +145,14 @@ def test_cleanup_restores_rule_if_still_removed(clients, scenario):
     assert not scenario.rule_removed
 
 
-def test_refuses_actions_it_does_not_own(scenario):
-    with pytest.raises(ValueError):
-        scenario.remediate("rollback_to_previous_revision")
+def test_cleanup_tolerates_rule_already_restored(clients, scenario):
+    (_, ec2_stub), _, _ = clients
+    scenario.rule_removed = True
+    ec2_stub.add_client_error(
+        "authorize_security_group_ingress",
+        service_error_code="InvalidPermission.Duplicate",
+    )
+
+    scenario.cleanup()
+
+    assert not scenario.rule_removed

@@ -2,14 +2,15 @@ import time
 from typing import Callable
 
 import boto3
-from botocore.exceptions import ClientError
 
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
+from chaos_pilot.remediation.engine import RemediationContext
+from chaos_pilot.remediation.executors import ingress_permission, restore_ingress_rule
 from chaos_pilot.scenarios.base import Detection
 
 
 class ConfigChangeScenario:
-    """Removes the rule that lets the ALB reach the ECS tasks, then restores it.
+    """Removes the rule that lets the ALB reach the ECS tasks, so it can be restored.
 
     This mimics a bad network change. Restoring a security-group rule needs
     human approval under the default policy.
@@ -54,12 +55,7 @@ class ConfigChangeScenario:
 
     @property
     def _permission(self) -> dict:
-        return {
-            "IpProtocol": "tcp",
-            "FromPort": self.port,
-            "ToPort": self.port,
-            "UserIdGroupPairs": [{"GroupId": self.alb_security_group_id}],
-        }
+        return ingress_permission(self.alb_security_group_id, self.port)
 
     def _rule_present(self) -> bool:
         group = self.ec2.describe_security_groups(
@@ -103,15 +99,9 @@ class ConfigChangeScenario:
             self.sleep(self.poll_interval)
 
     def _restore_rule(self):
-        try:
-            self.ec2.authorize_security_group_ingress(
-                GroupId=self.ecs_security_group_id,
-                IpPermissions=[self._permission],
-            )
-        except ClientError as error:
-            # Already there means the desired state holds.
-            if error.response["Error"]["Code"] != "InvalidPermission.Duplicate":
-                raise
+        restore_ingress_rule(
+            self.ec2, self.ecs_security_group_id, self.alb_security_group_id, self.port
+        )
         self.rule_removed = False
 
     # --- scenario steps ----------------------------------------------------
@@ -151,13 +141,11 @@ class ConfigChangeScenario:
         found = self._poll(incident_present, self.detect_timeout)
         return Detection(incident_found=found, signals=latest)
 
-    def remediate(self, action: str) -> str:
-        if action != "restore_security_group_rule":
-            raise ValueError(f"{self.name} cannot run action '{action}'")
-        self._restore_rule()
-        return (
-            f"Restored tcp/{self.port} from {self.alb_security_group_id} "
-            f"on {self.ecs_security_group_id}"
+    def remediation_context(self) -> RemediationContext:
+        return RemediationContext(
+            security_group_id=self.ecs_security_group_id,
+            source_security_group_id=self.alb_security_group_id,
+            port=self.port,
         )
 
     def verify(self) -> VerificationResult:

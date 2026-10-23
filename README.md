@@ -18,6 +18,7 @@ Early MVP. What exists today:
 - The incident model and lifecycle (`chaos_pilot/incidents`): every step from INJECTED to RESOLVED is recorded on a timeline, steps can't be skipped, and failures are recorded as FAILED rather than hidden.
 - The deterministic policy engine (`chaos_pilot/policy`): decides AUTO, HUMAN_APPROVAL or DENY from an allow-list of actions, their reversibility and blast radius, the AI's confidence and the kill switch.
 - The pipeline (`chaos_pilot/core/pipeline.py`) that runs a scenario end to end, including waiting for human approval with a timeout.
+- The remediation engine (`chaos_pilot/remediation`): executes only what the policy engine authorized, using the state the scenario recorded at injection. It refuses denied, unapproved, non-allow-listed or unknown actions without running anything, and a refusal ends the incident as FAILED.
 - The **Bad Deployment** scenario (`chaos_pilot/scenarios/bad_deployment.py`).
 - The **Configuration Change** scenario (`chaos_pilot/scenarios/config_change.py`).
 - A rule-based investigator (`chaos_pilot/investigator`) standing in for the AI investigator. It returns the same diagnosis shape a model would, so a model-backed one can replace it later.
@@ -31,8 +32,9 @@ app/main.py                          FastAPI entry point
 chaos_pilot/core/engine.py           Chaos engine and kill switch
 chaos_pilot/incidents/               Incident model, lifecycle and in-memory store
 chaos_pilot/policy/                  Deterministic policy engine
+chaos_pilot/remediation/             Remediation engine and AWS action executors
 chaos_pilot/investigator/            Investigator interface and rule-based stand-in
-chaos_pilot/scenarios/               Failure scenarios (inject, detect, remediate, verify)
+chaos_pilot/scenarios/               Failure scenarios (inject, detect, verify, cleanup)
 testapp/                             Small workload used as the experiment target
 chaos_pilot/experiments/             Failure experiments
 terraform/                           Test environment infrastructure
@@ -112,7 +114,7 @@ Endpoints:
 2. **Detect:** polls ECS and the ALB until the new revision shows failed tasks, unhealthy targets or a failed rollout (default timeout 10 minutes).
 3. **Investigate:** the investigator links the failure to the revision change and recommends `rollback_to_previous_revision`.
 4. **Policy:** rollback is allow-listed, reversible and low blast radius, so it runs automatically when confidence is high enough; otherwise it waits for approval.
-5. **Remediate:** updates the service back to the known-good task definition.
+5. **Remediate:** the remediation engine updates the service back to the known-good task definition.
 6. **Verify:** passes only when the service runs the known-good revision, the rollout is complete, running tasks match the desired count and every ALB target is healthy.
 7. **Cleanup:** always makes sure the service is back on the known-good revision and deregisters the bad one, even if a step failed.
 
@@ -122,7 +124,7 @@ Endpoints:
 2. **Detect:** polls until ALB targets turn unhealthy, and records whether the rule is present.
 3. **Investigate:** with no new deployment and the rule missing, the investigator recommends `restore_security_group_rule`.
 4. **Policy:** security-group changes always need **human approval**. The incident waits in AWAITING_APPROVAL until `POST /incidents/<id>/approve` or `/reject`, or fails after the approval timeout (15 minutes).
-5. **Remediate:** re-adds the exact rule that was removed.
+5. **Remediate:** the remediation engine re-adds the exact rule that was removed.
 6. **Verify:** passes only when the rule is back, running tasks match the desired count and every ALB target is healthy.
 7. **Cleanup:** always re-adds the rule if it is still missing, including after a rejection or failure.
 

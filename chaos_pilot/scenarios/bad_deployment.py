@@ -4,6 +4,7 @@ from typing import Callable
 import boto3
 
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
+from chaos_pilot.remediation.engine import RemediationContext
 from chaos_pilot.scenarios.base import Detection
 
 BAD_REVISION_ENV = {"name": "HEALTHY", "value": "false"}
@@ -16,7 +17,7 @@ READ_ONLY_FIELDS = {
 
 
 class BadDeploymentScenario:
-    """Deploys a revision whose health check fails, then rolls it back.
+    """Deploys a revision whose health check fails, so it can be rolled back.
 
     The bad revision is the current task definition with HEALTHY=false added
     to the container environment, so no second image is needed.
@@ -146,18 +147,12 @@ class BadDeploymentScenario:
         found = self._poll(incident_present, self.detect_timeout)
         return Detection(incident_found=found, signals=latest)
 
-    def remediate(self, action: str) -> str:
-        if action != "rollback_to_previous_revision":
-            raise ValueError(f"{self.name} cannot run action '{action}'")
-        if not self.known_good_task_definition:
-            raise RuntimeError("No known-good revision was recorded before injection")
-
-        self.ecs.update_service(
+    def remediation_context(self) -> RemediationContext:
+        return RemediationContext(
             cluster=self.cluster,
             service=self.service,
-            taskDefinition=self.known_good_task_definition,
+            known_good_task_definition=self.known_good_task_definition,
         )
-        return f"Rolled back to {self.known_good_task_definition}"
 
     def verify(self) -> VerificationResult:
         checks: tuple[CheckResult, ...] = ()

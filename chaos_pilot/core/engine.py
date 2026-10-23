@@ -9,7 +9,12 @@ from chaos_pilot.experiments.task_failure import (
 from chaos_pilot.incidents.models import Incident
 from chaos_pilot.incidents.store import IncidentStore
 from chaos_pilot.investigator.rule_based import RuleBasedInvestigator
-from chaos_pilot.policy.engine import PolicyEngine
+from chaos_pilot.policy.engine import DEFAULT_RULES, PolicyEngine
+from chaos_pilot.remediation.engine import RemediationEngine
+from chaos_pilot.remediation.executors import (
+    RestoreSecurityGroupRule,
+    RollbackToPreviousRevision,
+)
 from chaos_pilot.scenarios.bad_deployment import BadDeploymentScenario
 from chaos_pilot.scenarios.config_change import ConfigChangeScenario
 
@@ -45,6 +50,11 @@ class ChaosEngine:
             store=self.store,
             investigator=RuleBasedInvestigator(),
             policy=PolicyEngine(),
+            remediation=RemediationEngine(
+                executors=[RollbackToPreviousRevision(), RestoreSecurityGroupRule()],
+                # The policy's allow-list is the only allow-list.
+                allowed_actions=DEFAULT_RULES,
+            ),
             experiments_enabled=experiments_enabled,
         )
         self.store = self.pipeline.store

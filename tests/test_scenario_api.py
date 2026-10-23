@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app, get_engine
 from chaos_pilot.core.engine import ChaosEngine
-from tests.test_pipeline import FakeScenario
+from tests.test_pipeline import FakeScenario, make_pipeline
 
 
 def make_client(monkeypatch, enabled=True):
@@ -12,6 +12,7 @@ def make_client(monkeypatch, enabled=True):
         monkeypatch.delenv("CHAOS_PILOT_EXPERIMENTS_ENABLED", raising=False)
     engine = ChaosEngine(
         task_failure=object(),
+        pipeline=make_pipeline(),
         scenario_factories={"bad-deployment": FakeScenario},
     )
     original = engine.start_scenario

@@ -2,6 +2,8 @@ import boto3
 import pytest
 from botocore.stub import Stubber
 
+from chaos_pilot.remediation.engine import RemediationContext
+from chaos_pilot.remediation.executors import RollbackToPreviousRevision
 from chaos_pilot.scenarios.bad_deployment import BadDeploymentScenario
 
 CLUSTER = "chaos-pilot-cluster"
@@ -108,6 +110,9 @@ def test_inject_registers_unhealthy_revision_and_deploys_it(clients, scenario):
 
     assert scenario.known_good_task_definition == GOOD
     assert scenario.bad_task_definition == BAD
+    assert scenario.remediation_context() == RemediationContext(
+        cluster=CLUSTER, service=SERVICE, known_good_task_definition=GOOD
+    )
 
 
 def test_detects_unhealthy_targets_on_new_revision(clients, scenario):
@@ -137,7 +142,7 @@ def test_detection_gives_up_after_timeout(clients, scenario):
 
 
 def test_rollback_and_verify(clients, scenario):
-    _, ecs_stub, _, elb_stub = clients
+    ecs, ecs_stub, _, elb_stub = clients
     scenario.known_good_task_definition = GOOD
     ecs_stub.add_response(
         "update_service", {},
@@ -148,7 +153,7 @@ def test_rollback_and_verify(clients, scenario):
     expect_service(ecs_stub, service(GOOD, rollout="COMPLETED"))
     expect_targets(elb_stub, targets("healthy", "healthy"))
 
-    scenario.remediate("rollback_to_previous_revision")
+    RollbackToPreviousRevision(ecs_client=ecs).execute(scenario.remediation_context())
     result = scenario.verify()
 
     assert result.passed
@@ -166,12 +171,6 @@ def test_verify_reports_failure_when_service_never_recovers(clients, scenario):
     assert not result.passed
     failed = {c.name for c in result.checks if not c.passed}
     assert "alb_targets_healthy" in failed
-
-
-def test_refuses_actions_it_does_not_own(scenario):
-    scenario.known_good_task_definition = GOOD
-    with pytest.raises(ValueError):
-        scenario.remediate("restore_security_group_rule")
 
 
 def test_cleanup_restores_known_good_and_deregisters_bad(clients, scenario):

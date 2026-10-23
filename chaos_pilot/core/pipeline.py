@@ -4,6 +4,7 @@ from chaos_pilot.incidents.models import Decision, Incident, IncidentState
 from chaos_pilot.incidents.store import IncidentStore
 from chaos_pilot.investigator.base import Investigator
 from chaos_pilot.policy.engine import PolicyEngine
+from chaos_pilot.remediation.engine import RemediationEngine, RemediationRefused
 from chaos_pilot.scenarios.base import Scenario
 
 S = IncidentState
@@ -19,12 +20,14 @@ class Pipeline:
         store: IncidentStore,
         investigator: Investigator,
         policy: PolicyEngine,
+        remediation: RemediationEngine,
         experiments_enabled,
         approval_timeout: float = 900,
     ):
         self.store = store
         self.investigator = investigator
         self.policy = policy
+        self.remediation = remediation
         self.experiments_enabled = experiments_enabled
         self.approval_timeout = approval_timeout
         self._approvals: dict[str, threading.Event] = {}
@@ -81,6 +84,7 @@ class Pipeline:
             incident.transition(S.REJECTED, "; ".join(decision.reasons))
             return
 
+        approved = False
         if decision.decision is Decision.HUMAN_APPROVAL:
             incident.transition(S.AWAITING_APPROVAL, "; ".join(decision.reasons))
             incident.human_intervention = True
@@ -90,9 +94,17 @@ class Pipeline:
             if not self._approved.get(incident.id):
                 incident.transition(S.REJECTED, "Rejected by a human")
                 return
+            approved = True
 
         incident.transition(S.REMEDIATING)
-        incident.remediation = scenario.remediate(decision.action)
+        try:
+            result = self.remediation.execute(
+                decision, approved, scenario.remediation_context()
+            )
+        except RemediationRefused as refusal:
+            incident.fail(f"Remediation refused: {refusal}")
+            return
+        incident.remediation = result.detail
 
         incident.transition(S.VERIFYING, incident.remediation)
         incident.verification = scenario.verify()
