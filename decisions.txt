@@ -1,0 +1,312 @@
+CHAOS-PILOT DECISIONS LOG
+Running log of changes and design decisions. Plain text, lines under 100 characters.
+Rule: every code change or design decision adds an entry here in the same change.
+Sources: README.md, git history, and the code in chaos_pilot/, app/ and tests/.
+Anything not backed by those is marked "source: project owner" or listed under OPEN QUESTIONS.
+Last updated: 2026-10-27
+
+
+1. FROZEN MVP DECISIONS
+------------------------------------------------------------------------------------------------
+
+D1  Workflow
+    inject -> detect -> AI investigator -> policy engine -> remediate / request approval
+    -> verify -> notify
+    In code: chaos_pilot/core/pipeline.py runs every step except notify (not built, see 5).
+
+D2  Detection is deterministic; the AI never decides whether an incident exists.
+    In code: each scenario's detect() polls ECS, ALB and EC2 and applies fixed thresholds.
+    The investigator only runs after the pipeline has moved the incident to DETECTED.
+
+D3  The AI investigator only recommends; it never authorizes.
+    In code: Diagnosis carries recommended_action and confidence only. The Investigator
+    protocol docstring: "It never authorizes actions."
+
+D4  The policy engine is deterministic and action/risk-based: allow-list, reversibility,
+    blast radius, confidence as one input, kill switch.
+    In code: chaos_pilot/policy/engine.py (DEFAULT_RULES, PolicyEngine.decide).
+
+D5  The remediation engine only executes what policy authorized.
+    In code: chaos_pilot/remediation/engine.py (RemediationEngine.execute).
+
+D6  Verification checks real recovery signals, not API success.
+    In code: verify() in both scenarios polls the running revision, rollout state, running vs
+    desired task count, ALB target health and (Config Change) whether the rule is back.
+    An update_service or authorize call succeeding is never treated as recovery.
+
+D7  Scope guard: no databases, queues, multi-account support or extra integrations;
+    isolated test workload only.
+    In code: IncidentStore is in-memory ("The MVP scope guard rules out a database for now").
+    The kill switch, the cluster/service allow-list and the one-scenario-at-a-time lock keep
+    experiments on the test workload. Queues, multi-account and integrations: source:
+    project owner (nothing in code either way).
+
+
+2. CHANGE LOG (newest first)
+------------------------------------------------------------------------------------------------
+Format: date | commit | component
+        What / Why / Files
+
+2026-10-27 | uncommitted | LLM investigator
+  What:  Added chaos_pilot/investigator/llm.py (LLMInvestigator). Claude call with a JSON
+         schema whose recommended_action is an enum of the actions that have executors plus
+         escalate_to_human; no forced tool use. Guards: action outside the list becomes
+         escalate_to_human with confidence <= 0.3; confidence clamped to 0..1; API error,
+         timeout, refusal, max_tokens or malformed output falls back to RuleBasedInvestigator.
+         Diagnosis gained investigator ("rule_based", "llm", "rule_based_fallback") and the
+         incident report shows it. core/engine.py picks the investigator from
+         CHAOS_PILOT_INVESTIGATOR (default rules). Added anthropic to requirements.txt.
+  Why:   D3 keeps the AI as a recommender only; the allow-list check here is a third guard
+         after the policy engine and remediation engine. Rules stay the default so the repo
+         runs without an API key.
+  Files: README.md, requirements.txt, chaos_pilot/core/engine.py,
+         chaos_pilot/incidents/models.py, chaos_pilot/investigator/llm.py,
+         tests/test_llm_investigator.py
+  Tests: 66 passing (55 before), all with a stubbed client. Not yet run against the real API.
+
+2026-10-23 | f8bb6ac | Remediation engine
+  What:  Added chaos_pilot/remediation/ (RemediationEngine, RemediationContext,
+         RemediationResult, RemediationRefused, ActionExecutor protocol) and two executors,
+         RollbackToPreviousRevision and RestoreSecurityGroupRule. Removed remediate() from the
+         Scenario protocol and both scenarios; scenarios now expose remediation_context().
+         Pipeline takes a RemediationEngine and calls it instead of scenario.remediate().
+         Wired in core/engine.py with allowed_actions built from DEFAULT_RULES.
+         ConfigChangeScenario.cleanup() shares restore_ingress_rule() with the executor.
+  Why:   Execution separated from scenarios so that only policy-authorized actions run,
+         through one component that makes no decisions of its own (see 3.6).
+  Files: README.md, chaos_pilot/core/engine.py, chaos_pilot/core/pipeline.py,
+         chaos_pilot/remediation/{__init__,engine,executors}.py,
+         chaos_pilot/scenarios/{base,bad_deployment,config_change}.py,
+         tests/test_remediation_engine.py, tests/test_remediation_executors.py,
+         tests/test_pipeline.py, tests/test_bad_deployment.py, tests/test_config_change.py,
+         tests/test_scenario_api.py
+  Tests: 55 passing (42 before).
+
+2026-10-20 | fcb7cbc, f15630b, ea03a8b | Merges into main
+  What:  Merged the stacked branches mvp/config-change -> mvp/bad-deployment ->
+         mvp/incident-core -> main. No new code beyond the 2026-10-14 commits below.
+  Why:   Land the three MVP commits on main.
+  Files: Those of ee05b31, 503a6f6 and 5b75eb4.
+
+2026-10-15 | d4b73c4 | Merge pull request #1 (cleanup/repo-hygiene)
+  What:  Merged bdfd592 into main.
+  Why:   Land the repo clean-up and safety guards.
+  Files: Those of bdfd592.
+
+2026-10-14 | ee05b31 | Configuration Change scenario
+  What:  Scenario that removes the ALB-to-ECS ingress rule on port 80 (refusing to start if
+         it is already missing), detects unhealthy ALB targets, verifies the rule is back,
+         tasks match desired count and targets are healthy; cleanup always re-adds the rule.
+         Investigator rule recommending restore_security_group_rule. Terraform outputs for
+         both security group IDs.
+  Why:   Second MVP scenario; a bad network change. Restoring a security-group rule always
+         needs human approval by policy.
+  Files: README.md, chaos_pilot/core/engine.py, chaos_pilot/investigator/rule_based.py,
+         chaos_pilot/scenarios/config_change.py, terraform/outputs.tf,
+         tests/test_config_change.py
+
+2026-10-14 | 503a6f6 | Bad Deployment scenario, pipeline, investigator, incident API
+  What:  Scenario interface (inject, detect, remediate, verify, cleanup). Bad Deployment on
+         ECS: deploys a copy of the current revision with HEALTHY=false, detects failed tasks
+         or unhealthy ALB targets, rolls back to the recorded known-good revision, verifies
+         real recovery. Pipeline with human approval and timeout; unexpected errors become
+         FAILED and cleanup always runs. Rule-based investigator behind an interface.
+         API endpoints for scenarios, incident reports and approve/reject; one scenario at a
+         time. Test app with a switchable health check, ECR repo, Terraform outputs and
+         image/health-check variables.
+  Why:   First end-to-end MVP scenario. The rule-based investigator lets the pipeline run
+         without an API key until a model-backed one replaces it.
+  Files: README.md, app/main.py, chaos_pilot/core/engine.py, chaos_pilot/core/pipeline.py,
+         chaos_pilot/incidents/models.py, chaos_pilot/investigator/{__init__,base,
+         rule_based}.py, chaos_pilot/scenarios/{__init__,base,bad_deployment}.py,
+         terraform/{alb,ecr,ecs,outputs,variables,vpc}.tf, testapp/{Dockerfile,app.py},
+         tests/test_bad_deployment.py, tests/test_pipeline.py, tests/test_scenario_api.py
+
+2026-10-14 | 5b75eb4 | Incident lifecycle model and policy engine
+  What:  Incident model with the MVP lifecycle, enforced transitions, a timeline, recovery
+         duration and a report. In-memory incident store. Policy engine deciding AUTO,
+         HUMAN_APPROVAL or DENY from an allow-list, reversibility, blast radius, AI
+         confidence and the kill switch.
+  Why:   Foundation for the pipeline. In-memory store "per the MVP scope guard".
+  Files: README.md, chaos_pilot/incidents/{__init__,models,store}.py,
+         chaos_pilot/policy/{__init__,engine}.py, tests/test_incident_lifecycle.py,
+         tests/test_policy_engine.py
+
+2026-10-14 | bdfd592 | Repo hygiene and task-failure safety guards
+  What:  Stopped tracking the Terraform plan and a stray describe-services dump; fixed the
+         last line of .gitignore; moved second-AZ subnet CIDRs into variables; restricted
+         task-failure to tasks of the configured test service; added the experiments kill
+         switch (off by default, 403 when refused); requirements files, README, tests.
+  Why:   Experiments must only touch the test service and be off unless enabled.
+  Files: .gitignore, README.md, app/{__init__,main}.py, chaos_pilot/__init__.py,
+         chaos_pilot/core/{__init__,engine}.py, chaos_pilot/experiments/{__init__,
+         task_failure}.py, "ecs describe-services \" (deleted), requirements.txt,
+         requirements-dev.txt, terraform/chaos-pilot.tfplan (deleted), terraform/subnets.tf,
+         terraform/variables.tf, tests/__init__.py, tests/test_task_failure.py
+
+2026-10-07 | b0e4598 | .gitignore
+  What:  Fixed the *.tfplan ignore line.
+  Why:   Keep the Terraform plan out of git.
+  Files: .gitignore
+
+2026-10-07 | 14cdffc | Initial commit
+  What:  Terraform test environment (VPC, subnets, ALB, ECS, IAM, NAT instance), FastAPI app
+         and a task-failure experiment that stops one ECS task.
+  Why:   Not recorded.
+  Files: .gitignore, README.md, app/main.py, chaos_pilot/core/engine.py,
+         chaos_pilot/experiments/task_failure.py, terraform/*.tf, terraform/chaos-pilot.tfplan,
+         "ecs describe-services \"
+
+
+3. COMPONENT DECISIONS
+------------------------------------------------------------------------------------------------
+
+3.1 Incident model (chaos_pilot/incidents/models.py, store.py)
+  - States: INJECTED, DETECTED, INVESTIGATING, POLICY_DECIDED, AWAITING_APPROVAL,
+    REMEDIATING, VERIFYING, RESOLVED, REJECTED, FAILED. Terminal: RESOLVED, REJECTED, FAILED.
+  - Transitions are an explicit allow-list (ALLOWED_TRANSITIONS); a step cannot be skipped,
+    and RESOLVED is reachable only from VERIFYING. Invalid moves raise InvalidTransition.
+  - fail() works from any non-terminal state and records the reason. Failures are recorded,
+    never hidden.
+  - Every step is appended to a timeline. recovery_seconds is measured from DETECTED to
+    RESOLVED and is None for any other outcome.
+  - VerificationResult passes only if there is at least one check and all checks pass, so
+    an empty verification can never count as recovery.
+  - IncidentStore is in-memory with a lock (scope guard: no database).
+
+3.2 Policy engine (chaos_pilot/policy/engine.py)
+  - DEFAULT_RULES is the single allow-list. Each action has reversible, blast_radius and
+    auto_allowed:
+      rollback_to_previous_revision   reversible, LOW,    auto allowed
+      restore_security_group_rule     reversible, MEDIUM, approval required
+      restore_known_good_config       reversible, MEDIUM, approval required
+      restore_dependency              reversible, MEDIUM, approval required
+  - Order: kill switch off -> DENY; action not allow-listed -> DENY; otherwise collect
+    reasons (approval required by rule, not reversible, blast radius not LOW, confidence
+    below 0.70). Any reason -> HUMAN_APPROVAL; none -> AUTO.
+  - The AI's confidence can only make the decision more cautious; it can never grant an
+    action the rules don't already allow.
+  - Every decision carries its reasons, which go into the incident report.
+
+3.3 Pipeline and chaos engine (chaos_pilot/core/pipeline.py, engine.py)
+  - Kill switch is checked before injection and passed into the policy decision.
+  - No incident detected within the timeout -> FAILED. DENY -> REJECTED.
+  - HUMAN_APPROVAL waits in AWAITING_APPROVAL (default 900 s). Timeout -> FAILED
+    ("Approval timed out"); rejection -> REJECTED.
+  - approved=True is passed to the remediation engine only after a human actually approved;
+    AUTO passes approved=False.
+  - Failed verification -> FAILED, naming the checks that failed.
+  - Any unexpected exception -> FAILED, never reported as success. cleanup() always runs in
+    a finally block; a cleanup failure is added to the timeline as a note.
+  - ChaosEngine allows one scenario at a time (lock), runs it in a background thread, and
+    refuses to build a scenario when its required environment variables are missing.
+
+3.4 Investigator (chaos_pilot/investigator/)
+  - Investigator is a protocol returning a Diagnosis, so a model-backed investigator can
+    replace RuleBasedInvestigator without changes elsewhere.
+  - RuleBasedInvestigator: revision changed + no healthy new-revision tasks + known previous
+    revision -> rollback_to_previous_revision (0.90). Ingress rule missing + unhealthy
+    targets -> restore_security_group_rule (0.85). Otherwise escalate_to_human (0.30).
+
+3.5 Scenarios (chaos_pilot/scenarios/)
+  - Protocol: inject, detect, remediation_context, verify, cleanup. Scenarios no longer fix
+    anything themselves (see 3.6).
+  - AWS clients, sleep and clock are injectable so tests use stubbed AWS and fake time.
+  - Bad Deployment:
+    - The bad revision is the current task definition plus HEALTHY=false, so no second
+      image is needed. Read-only fields are stripped before re-registering.
+    - The known-good task definition is recorded at injection.
+    - Detection needs a changed revision AND (failed tasks, unhealthy targets or a FAILED
+      rollout). New-revision healthy tasks only count once the rollout is COMPLETED, because
+      old-revision tasks stay healthy during a rolling deploy.
+    - Verify: known-good revision running, rollout COMPLETED, running == desired, all ALB
+      targets healthy.
+    - Cleanup puts the service back on known-good if needed and deregisters the bad revision.
+    - ECS deployment circuit breaker is off on purpose so Chaos-Pilot, not ECS, detects the
+      bad deployment and decides on rollback (README).
+  - Configuration Change:
+    - Refuses to inject if the ALB-to-ECS rule is already missing (unknown start state).
+    - Removes exactly tcp/<port> from the ALB security group; the same permission builder
+      (ingress_permission) is used to remove and restore it.
+    - Verify: rule present, running == desired, all ALB targets healthy.
+    - Cleanup re-adds the rule if it was removed or is missing, including after rejection
+      or failure. "InvalidPermission.Duplicate" counts as the desired state.
+
+3.6 Remediation engine (chaos_pilot/remediation/)
+  - Why it was moved out of scenarios: each scenario used to run its own fix in
+    remediate(action), so execution was spread across scenarios and each one did its own
+    action check. Now one component executes, only after policy authorized the action, and
+    it makes no decisions of its own. Scenarios describe the failure; the engine fixes it.
+  - RemediationContext: a frozen dataclass with the "before" state a scenario recorded at
+    injection (cluster, service, known-good task definition, security group, source security
+    group, port). The pipeline gets it from scenario.remediation_context() right before
+    executing. Executors check that the fields they need are set and raise RuntimeError
+    otherwise ("Not recorded before injection: ..."), which ends the incident as FAILED.
+  - One executor class per action (Strategy pattern): each implements ActionExecutor
+    (action: str, execute(context) -> str). New actions are added as new executors without
+    touching the engine.
+  - Action -> executor registry: RemediationEngine builds a dict from each executor's action
+    name and rejects two executors for the same action. This is a registry (lookup of
+    already-built instances); it does not construct executors. They are built in
+    core/engine.py, and their boto3 clients are created on first use so wiring needs no
+    AWS credentials.
+  - Refusal checks, in order. Each raises RemediationRefused before any executor runs:
+      1. decision is DENY
+      2. decision is HUMAN_APPROVAL and approved is False
+      3. decision is not AUTO or HUMAN_APPROVAL (fail closed on an unknown value)
+      4. action is not in allowed_actions
+      5. no executor is registered for the action
+    Otherwise the matching executor runs exactly once and the engine returns
+    RemediationResult(action, executed=True, detail).
+  - A refused remediation ends the incident as FAILED with "Remediation refused: <reason>",
+    never RESOLVED. The pipeline still turns DENY into REJECTED before calling the engine
+    (lifecycle unchanged), so the engine's DENY check is a second guard.
+  - allowed_actions comes from DEFAULT_RULES so there is one allow-list (see 5 for the
+    known issue with this).
+  - restore_dependency (and restore_known_good_config) are allow-listed but have no
+    executor: no built scenario needs them and the investigator never recommends them. If
+    either is ever selected, the engine refuses with "No executor is registered" and the
+    incident ends FAILED. Why they were allow-listed in 5b75eb4 is not recorded; see
+    OPEN QUESTIONS.
+
+3.7 Task-failure experiment (chaos_pilot/experiments/task_failure.py)
+  - Stops a task only if it belongs to the configured service in the configured cluster;
+    anything else raises ExperimentNotAllowed before any change (API returns 403).
+  - Refused unless CHAOS_PILOT_EXPERIMENTS_ENABLED=true.
+
+
+4. SCENARIO STATUS
+------------------------------------------------------------------------------------------------
+  Bad Deployment          done      chaos_pilot/scenarios/bad_deployment.py
+  Configuration Change    done      chaos_pilot/scenarios/config_change.py
+  Dependency Failure      proposed  not built (README)
+  Cascading Failure       proposed  not built (README). May be replaced if it overlaps with
+                                    Dependency Failure (source: project owner).
+
+
+5. KNOWN ISSUES / NEXT STEPS
+------------------------------------------------------------------------------------------------
+  - NOTIFY step not built. The pipeline ends at RESOLVED / REJECTED / FAILED.
+  - The LLM investigator is built but not yet evaluated or run against the real API.
+  - escalate_to_human ends as REJECTED instead of escalating: it is not in DEFAULT_RULES, so
+    policy returns DENY ("'escalate_to_human' is not an allow-listed action") and the
+    pipeline marks the incident REJECTED.
+  - core/engine.py builds allowed_actions from DEFAULT_RULES rather than the policy engine's
+    own rules. A PolicyEngine with custom rules would not change what the remediation engine
+    allows.
+  - Dashboard not built.
+  - After RestoreSecurityGroupRule runs, ConfigChangeScenario.rule_removed is still True, so
+    cleanup() calls authorize_security_group_ingress once more and gets
+    InvalidPermission.Duplicate, which is tolerated. Harmless, one extra AWS call.
+
+
+OPEN QUESTIONS
+------------------------------------------------------------------------------------------------
+  - Why were restore_dependency and restore_known_good_config allow-listed in 5b75eb4 before
+    any scenario uses them? Reserved for Dependency Failure? Not recorded.
+  - What should NOTIFY send, and where? Nothing in the code or history says.
+  - How should escalate_to_human be handled: allow-listed with an approval-only rule, or a
+    new path? The lifecycle has no escalation state today.
+  - Should allowed_actions come from the policy instance's rules (policy.rules) instead of
+    DEFAULT_RULES?
+  - What decides whether Cascading Failure is kept or replaced by Dependency Failure?

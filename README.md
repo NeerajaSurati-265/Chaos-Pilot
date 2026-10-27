@@ -21,7 +21,7 @@ Early MVP. What exists today:
 - The remediation engine (`chaos_pilot/remediation`): executes only what the policy engine authorized, using the state the scenario recorded at injection. It refuses denied, unapproved, non-allow-listed or unknown actions without running anything, and a refusal ends the incident as FAILED.
 - The **Bad Deployment** scenario (`chaos_pilot/scenarios/bad_deployment.py`).
 - The **Configuration Change** scenario (`chaos_pilot/scenarios/config_change.py`).
-- A rule-based investigator (`chaos_pilot/investigator`) standing in for the AI investigator. It returns the same diagnosis shape a model would, so a model-backed one can replace it later.
+- Two investigators (`chaos_pilot/investigator`): a rule-based one (default, no API key) and a Claude-backed one (`CHAOS_PILOT_INVESTIGATOR=llm`). Both return the same diagnosis; the LLM one falls back to the rules on any error and the incident report says which one ran.
 
 Dependency Failure, Cascading Failure and the dashboard are not built yet.
 
@@ -92,6 +92,9 @@ The app uses your normal AWS credentials (`AWS_PROFILE` or environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `CHAOS_PILOT_INVESTIGATOR` | `rules` | `rules` (built-in rules) or `llm` (Claude; needs `ANTHROPIC_API_KEY`). |
+| `CHAOS_PILOT_LLM_MODEL` | `claude-opus-5-5` | Model used when the investigator is `llm`. |
+| `CHAOS_PILOT_LLM_TIMEOUT` | `60` | Seconds to wait for the model before falling back to the rules. |
 | `CHAOS_PILOT_EXPERIMENTS_ENABLED` | `false` | Kill switch. Experiments are refused unless this is `true`. |
 | `CHAOS_PILOT_CLUSTER` | `chaos-pilot-cluster` | ECS cluster experiments may target. |
 | `CHAOS_PILOT_SERVICE` | `chaos-pilot-service` | Only tasks of this service may be stopped. |
@@ -107,6 +110,15 @@ Endpoints:
 - `POST /scenarios/bad-deployment` or `POST /scenarios/config-change` starts that scenario in the background and returns the incident ID. Only one scenario runs at a time.
 - `GET /incidents` and `GET /incidents/<id>` return incident reports: signals, diagnosis, policy decision and reasons, remediation, verification checks, recovery time and timeline.
 - `POST /incidents/<id>/approve` and `POST /incidents/<id>/reject` answer an incident waiting for human approval.
+
+## LLM investigator
+
+With `CHAOS_PILOT_INVESTIGATOR=llm` the investigator sends the incident's signals (values clipped to 200 characters, treated as data) to Claude and gets back a diagnosis in a fixed JSON format. The model can only pick an action from the list Chaos-Pilot has executors for, plus `escalate_to_human`.
+
+- An action outside that list becomes `escalate_to_human` with confidence capped at 0.3.
+- Confidence is clamped to 0 to 1.
+- An API error, timeout, refusal, truncated or malformed answer falls back to the rule-based investigator, and the incident report shows `investigator: rule_based_fallback`.
+- The model only recommends. The policy engine and remediation engine still decide and check, exactly as before.
 
 ## Bad Deployment scenario
 

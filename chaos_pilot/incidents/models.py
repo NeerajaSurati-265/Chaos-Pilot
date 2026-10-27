@@ -59,6 +59,8 @@ class Diagnosis:
     confidence: float
     explanation: str
     recommended_action: str
+    # Which investigator produced this: "rule_based", "llm" or "rule_based_fallback".
+    investigator: str = "rule_based"
 
 
 class Decision(str, Enum):
@@ -165,6 +167,7 @@ class Incident:
             "recommended_action": (
                 self.diagnosis.recommended_action if self.diagnosis else None
             ),
+            "investigator": self.diagnosis.investigator if self.diagnosis else None,
             "policy_decision": (
                 self.policy_decision.decision.value if self.policy_decision else None
             ),

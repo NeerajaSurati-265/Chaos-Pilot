@@ -8,6 +8,7 @@ from chaos_pilot.experiments.task_failure import (
 )
 from chaos_pilot.incidents.models import Incident
 from chaos_pilot.incidents.store import IncidentStore
+from chaos_pilot.investigator.llm import LLMInvestigator
 from chaos_pilot.investigator.rule_based import RuleBasedInvestigator
 from chaos_pilot.policy.engine import DEFAULT_RULES, PolicyEngine
 from chaos_pilot.remediation.engine import RemediationEngine
@@ -25,6 +26,14 @@ DEFAULT_SERVICE_NAME = "chaos-pilot-service"
 def experiments_enabled() -> bool:
     # Kill switch: experiments are refused unless explicitly enabled.
     return os.getenv("CHAOS_PILOT_EXPERIMENTS_ENABLED", "false").lower() == "true"
+
+
+def build_investigator(actions: list[str]):
+    """CHAOS_PILOT_INVESTIGATOR=llm uses Claude (needs ANTHROPIC_API_KEY); default is rules."""
+    rules = RuleBasedInvestigator()
+    if os.getenv("CHAOS_PILOT_INVESTIGATOR", "rules").lower() == "llm":
+        return LLMInvestigator(allowed_actions=actions, fallback=rules)
+    return rules
 
 
 class ChaosEngine:
@@ -46,12 +55,13 @@ class ChaosEngine:
             service_name=self.service
         )
         self.store = IncidentStore()
+        executors = [RollbackToPreviousRevision(), RestoreSecurityGroupRule()]
         self.pipeline = pipeline or Pipeline(
             store=self.store,
-            investigator=RuleBasedInvestigator(),
+            investigator=build_investigator([e.action for e in executors]),
             policy=PolicyEngine(),
             remediation=RemediationEngine(
-                executors=[RollbackToPreviousRevision(), RestoreSecurityGroupRule()],
+                executors=executors,
                 # The policy's allow-list is the only allow-list.
                 allowed_actions=DEFAULT_RULES,
             ),
