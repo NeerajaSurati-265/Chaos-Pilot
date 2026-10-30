@@ -34,6 +34,13 @@ DEFAULT_RULES: dict[str, ActionRule] = {
     ),
 }
 
+# Which allow-listed actions fit which incident type. An action outside its incident's
+# set is denied no matter how confident the AI is. Unknown incident types are denied.
+SCENARIO_ACTIONS: dict[str, frozenset[str]] = {
+    "bad_deployment": frozenset({"rollback_to_previous_revision"}),
+    "config_change": frozenset({"restore_security_group_rule"}),
+}
+
 DEFAULT_MIN_AUTO_CONFIDENCE = 0.7
 
 
@@ -52,16 +59,34 @@ class PolicyEngine:
         self.rules = DEFAULT_RULES if rules is None else rules
         self.min_auto_confidence = min_auto_confidence
 
-    def decide(self, diagnosis: Diagnosis, experiments_enabled: bool) -> PolicyDecision:
+    def decide(
+        self, diagnosis: Diagnosis, experiments_enabled: bool, *, scenario: str
+    ) -> PolicyDecision:
         action = diagnosis.recommended_action
         rule = self.rules.get(action)
 
         if not experiments_enabled:
             return PolicyDecision(action, Decision.DENY, ("Kill switch is on",))
 
+        permitted = SCENARIO_ACTIONS.get(scenario)
+        if permitted is None:
+            return PolicyDecision(
+                action, Decision.DENY, (f"Unknown incident type '{scenario}'",)
+            )
+
         if rule is None:
             return PolicyDecision(
                 action, Decision.DENY, (f"'{action}' is not an allow-listed action",)
+            )
+
+        if action not in permitted:
+            return PolicyDecision(
+                action,
+                Decision.DENY,
+                (
+                    f"'{action}' does not fit incident type '{scenario}' "
+                    f"(permitted: {', '.join(sorted(permitted))})",
+                ),
             )
 
         reasons = []

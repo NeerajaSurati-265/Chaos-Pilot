@@ -121,6 +121,21 @@ def test_unclear_evidence_is_denied_and_not_remediated():
     assert executed(pipeline) == []
 
 
+def test_action_that_does_not_fit_the_incident_type_never_reaches_remediation():
+    # The rule-based investigator recommends rollback for these signals, but this is a
+    # config_change incident.
+    pipeline = make_pipeline()
+    scenario = FakeScenario()
+    scenario.name = "config_change"
+    incident = run(pipeline, scenario)
+
+    assert incident.state is S.REJECTED
+    assert incident.report()["policy_decision"] == "DENY"
+    assert "does not fit incident type 'config_change'" in incident.timeline[-1].note
+    assert incident.remediation_result is None
+    assert executed(pipeline) == []
+
+
 def test_kill_switch_stops_before_injection():
     pipeline = make_pipeline(enabled=False)
     incident = run(pipeline, FakeScenario())

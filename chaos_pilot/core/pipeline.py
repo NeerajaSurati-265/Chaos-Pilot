@@ -76,7 +76,9 @@ class Pipeline:
         incident.transition(S.INVESTIGATING)
         incident.diagnosis = self.investigator.investigate(scenario.name, incident.signals)
 
-        decision = self.policy.decide(incident.diagnosis, self.experiments_enabled())
+        decision = self.policy.decide(
+            incident.diagnosis, self.experiments_enabled(), scenario=incident.scenario
+        )
         incident.policy_decision = decision
         incident.transition(S.POLICY_DECIDED, f"{decision.decision.value}: {decision.action}")
 

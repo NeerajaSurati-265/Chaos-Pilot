@@ -111,7 +111,7 @@ def test_detection_leads_to_approval_required_restore(clients, scenario):
 
     detection = scenario.detect()
     diagnosis = RuleBasedInvestigator().investigate(scenario.name, detection.signals)
-    decision = PolicyEngine().decide(diagnosis, experiments_enabled=True)
+    decision = PolicyEngine().decide(diagnosis, experiments_enabled=True, scenario=scenario.name)
 
     assert detection.incident_found
     assert diagnosis.recommended_action == "restore_security_group_rule"

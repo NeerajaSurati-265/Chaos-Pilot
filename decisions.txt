@@ -3,7 +3,7 @@ Running log of changes and design decisions. Plain text, lines under 100 charact
 Rule: every code change or design decision adds an entry here in the same change.
 Sources: README.md, git history, and the code in chaos_pilot/, app/ and tests/.
 Anything not backed by those is marked "source: project owner" or listed under OPEN QUESTIONS.
-Last updated: 2026-10-27
+Last updated: 2026-10-31
 
 
 1. FROZEN MVP DECISIONS
@@ -46,6 +46,18 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 ------------------------------------------------------------------------------------------------
 Format: date | commit | component
         What / Why / Files
+
+2026-10-31 | uncommitted | Policy: incident type -> permitted actions
+  What:  SCENARIO_ACTIONS maps bad_deployment -> rollback_to_previous_revision and
+         config_change -> restore_security_group_rule. A mismatched action or unknown incident
+         type is DENY (reason names the mismatch, shown on the REJECTED timeline note); a
+         substitute action was rejected so policy never authors an action the AI did not
+         recommend. decide() requires the scenario as a keyword-only argument. A test checks
+         every registered scenario name is a key in SCENARIO_ACTIONS.
+  Why:   D3, D4. Closes the rollback-during-Config-Change auto-approval, which only failed safe
+         by accident. Confidence never overrides it.
+  Files: chaos_pilot/policy/engine.py, chaos_pilot/core/pipeline.py,
+         tests/test_policy_engine.py, tests/test_config_change.py, tests/test_pipeline.py
 
 2026-10-27 | uncommitted | Remediation engine: structured result, preconditions, FAILED
   What:  RemediationResult now carries action, parameters, started_at, finished_at, status
