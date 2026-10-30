@@ -47,6 +47,23 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-10-31 | uncommitted | Escalation: escalate_to_human gets a real path
+  What:  New terminal state ESCALATED (POLICY_DECIDED -> ESCALATED only) and Decision.ESCALATE.
+         Policy turns escalate_to_human into ESCALATE for every known scenario, whatever the
+         confidence; kill switch and unknown scenario still DENY. It stays out of DEFAULT_RULES
+         and SCENARIO_ACTIONS, so it is never executable, and the remediation engine already
+         refuses it (unchanged). Pipeline sets human_intervention, logs a warning, ends
+         ESCALATED with no remediation or verification. Chosen over AWAITING_APPROVAL, which
+         can reach REMEDIATING. Cleanup choice: the injected fault is reverted immediately, as
+         for REJECTED/FAILED, since nothing in-system lets a human act on it; the result is on
+         the timeline ("not independently verified"). Pipeline.run now uses TERMINAL_STATES
+         instead of a hard-coded tuple. The one-experiment lock is released in a finally, so
+         it is unaffected.
+  Why:   D3, D4. The AI saying "a human should look" was recorded as REJECTED.
+  Files: chaos_pilot/incidents/models.py, chaos_pilot/policy/engine.py,
+         chaos_pilot/core/pipeline.py, tests/test_policy_engine.py, tests/test_pipeline.py,
+         tests/test_incident_lifecycle.py, tests/test_remediation_engine.py
+
 2026-10-31 | uncommitted | Policy: incident type -> permitted actions
   What:  SCENARIO_ACTIONS maps bad_deployment -> rollback_to_previous_revision and
          config_change -> restore_security_group_rule. A mismatched action or unknown incident
@@ -196,7 +213,7 @@ Format: date | commit | component
 
 3.1 Incident model (chaos_pilot/incidents/models.py, store.py)
   - States: INJECTED, DETECTED, INVESTIGATING, POLICY_DECIDED, AWAITING_APPROVAL,
-    REMEDIATING, VERIFYING, RESOLVED, REJECTED, FAILED. Terminal: RESOLVED, REJECTED, FAILED.
+    REMEDIATING, VERIFYING, RESOLVED, REJECTED, FAILED. Terminal: RESOLVED, REJECTED, FAILED (ESCALATED added 2026-10-31).
   - Transitions are an explicit allow-list (ALLOWED_TRANSITIONS); a step cannot be skipped,
     and RESOLVED is reachable only from VERIFYING. Invalid moves raise InvalidTransition.
   - fail() works from any non-terminal state and records the reason. Failures are recorded,
@@ -321,9 +338,8 @@ Format: date | commit | component
 ------------------------------------------------------------------------------------------------
   - NOTIFY step not built. The pipeline ends at RESOLVED / REJECTED / FAILED.
   - The LLM investigator is built but not yet evaluated or run against the real API.
-  - escalate_to_human ends as REJECTED instead of escalating: it is not in DEFAULT_RULES, so
-    policy returns DENY ("'escalate_to_human' is not an allow-listed action") and the
-    pipeline marks the incident REJECTED.
+  - Escalation has no notification or hand-off: the incident ends ESCALATED with a timeline
+    entry and a log warning only (was: escalate_to_human ended as REJECTED; fixed 2026-10-31).
   - core/engine.py builds allowed_actions from DEFAULT_RULES rather than the policy engine's
     own rules. A PolicyEngine with custom rules would not change what the remediation engine
     allows.
@@ -344,8 +360,6 @@ OPEN QUESTIONS
   - Why were restore_dependency and restore_known_good_config allow-listed in 5b75eb4 before
     any scenario uses them? Reserved for Dependency Failure? Not recorded.
   - What should NOTIFY send, and where? Nothing in the code or history says.
-  - How should escalate_to_human be handled: allow-listed with an approval-only rule, or a
-    new path? The lifecycle has no escalation state today.
   - Should allowed_actions come from the policy instance's rules (policy.rules) instead of
     DEFAULT_RULES?
   - What decides whether Cascading Failure is kept or replaced by Dependency Failure?

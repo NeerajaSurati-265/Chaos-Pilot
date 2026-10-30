@@ -1,7 +1,7 @@
 import pytest
 
 from chaos_pilot.incidents.models import Decision, Diagnosis
-from chaos_pilot.policy.engine import SCENARIO_ACTIONS, PolicyEngine
+from chaos_pilot.policy.engine import DEFAULT_RULES, SCENARIO_ACTIONS, PolicyEngine
 from chaos_pilot.scenarios.bad_deployment import BadDeploymentScenario
 from chaos_pilot.scenarios.config_change import ConfigChangeScenario
 
@@ -10,6 +10,7 @@ REGISTERED_SCENARIOS = [BadDeploymentScenario, ConfigChangeScenario]
 
 ROLLBACK = "rollback_to_previous_revision"
 RESTORE_RULE = "restore_security_group_rule"
+ESCALATE = "escalate_to_human"
 
 
 def diagnosis(action, confidence=0.9):
@@ -71,11 +72,31 @@ def test_unknown_incident_type_is_denied():
     assert "Unknown incident type" in result.reasons[0]
 
 
-def test_escalate_to_human_keeps_its_allow_list_denial():
-    result = engine.decide(diagnosis("escalate_to_human", 0.3), True, scenario="config_change")
+@pytest.mark.parametrize("scenario", ["bad_deployment", "config_change"])
+@pytest.mark.parametrize("confidence", [0.3, 1.0])
+def test_escalate_to_human_is_an_escalation_at_any_confidence(scenario, confidence):
+    result = engine.decide(diagnosis(ESCALATE, confidence), True, scenario=scenario)
+
+    assert result.decision is Decision.ESCALATE
+    assert "human review" in result.reasons[0]
+
+
+def test_escalate_to_human_with_unknown_scenario_is_denied():
+    result = engine.decide(diagnosis(ESCALATE, 0.3), True, scenario="made_up_incident")
 
     assert result.decision is Decision.DENY
-    assert "not an allow-listed action" in result.reasons[0]
+    assert "Unknown incident type" in result.reasons[0]
+
+
+def test_kill_switch_denies_escalation_too():
+    result = engine.decide(diagnosis(ESCALATE, 0.3), False, scenario="config_change")
+
+    assert result.decision is Decision.DENY
+
+
+def test_escalate_to_human_is_never_an_executable_action():
+    assert ESCALATE not in DEFAULT_RULES
+    assert all(ESCALATE not in actions for actions in SCENARIO_ACTIONS.values())
 
 
 @pytest.mark.parametrize("scenario_class", REGISTERED_SCENARIOS)

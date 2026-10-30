@@ -41,6 +41,10 @@ SCENARIO_ACTIONS: dict[str, frozenset[str]] = {
     "config_change": frozenset({"restore_security_group_rule"}),
 }
 
+# Not a remediation: policy turns it into an ESCALATE decision and nothing is executed.
+# It is deliberately in neither DEFAULT_RULES nor SCENARIO_ACTIONS.
+ESCALATE_ACTION = "escalate_to_human"
+
 DEFAULT_MIN_AUTO_CONFIDENCE = 0.7
 
 
@@ -72,6 +76,13 @@ class PolicyEngine:
         if permitted is None:
             return PolicyDecision(
                 action, Decision.DENY, (f"Unknown incident type '{scenario}'",)
+            )
+
+        if action == ESCALATE_ACTION:
+            return PolicyDecision(
+                action,
+                Decision.ESCALATE,
+                (f"AI recommended human review: {diagnosis.likely_cause}",),
             )
 
         if rule is None:

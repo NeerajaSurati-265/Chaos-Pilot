@@ -1,6 +1,7 @@
 import threading
 import time
 
+from chaos_pilot.core.engine import ChaosEngine
 from chaos_pilot.core.pipeline import Pipeline
 from chaos_pilot.incidents.models import (
     CheckResult,
@@ -112,13 +113,86 @@ def test_nothing_detected_fails_without_remediating():
     assert executed(pipeline) == []
 
 
-def test_unclear_evidence_is_denied_and_not_remediated():
-    pipeline = make_pipeline()
-    scenario = FakeScenario(signals=[Signal("ecs", "revision_changed", False)])
-    incident = run(pipeline, scenario)
+UNCLEAR_SIGNALS = [Signal("ecs", "revision_changed", False)]
 
-    assert incident.state is S.REJECTED
+
+def test_unclear_evidence_is_escalated_and_not_remediated():
+    pipeline = make_pipeline()
+    scenario = FakeScenario(signals=UNCLEAR_SIGNALS)
+    incident = run(pipeline, scenario)
+    report = incident.report()
+    notes = [event.note for event in incident.timeline]
+
+    assert incident.state is S.ESCALATED
     assert executed(pipeline) == []
+    assert incident.remediation is None
+    assert incident.remediation_result is None
+    assert incident.verification is None
+    assert scenario.cleaned_up
+    assert "ESCALATE: escalate_to_human" in notes
+    assert any("AI recommended human review" in note for note in notes)
+    assert notes[-1].startswith("Cleanup completed")
+    assert report["state"] == "ESCALATED"
+    assert report["recommended_action"] == "escalate_to_human"
+    assert report["policy_decision"] == "ESCALATE"
+    assert "AI recommended human review" in report["policy_reasons"][0]
+    assert report["human_intervention"] is True
+    assert report["executed_remediation"] is None
+    assert report["remediation_result"] is None
+    assert report["verification"] == []
+    assert report["recovery_seconds"] is None
+    assert report["failure_reason"] is None
+
+
+def test_escalation_logs_a_warning(caplog):
+    with caplog.at_level("WARNING", logger="chaos_pilot.core.pipeline"):
+        incident = run(make_pipeline(), FakeScenario(signals=UNCLEAR_SIGNALS))
+
+    assert any(
+        incident.id in record.getMessage() and "escalated" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_cleanup_failure_on_an_escalated_incident_is_recorded():
+    scenario = FakeScenario(signals=UNCLEAR_SIGNALS)
+
+    def broken_cleanup():
+        raise RuntimeError("AWS throttled")
+
+    scenario.cleanup = broken_cleanup
+    incident = run(make_pipeline(), scenario)
+
+    assert incident.state is S.ESCALATED
+    assert incident.timeline[-1].note == "Cleanup failed: AWS throttled"
+
+
+def test_escalated_incident_cannot_be_approved_or_rejected():
+    pipeline = make_pipeline()
+    incident = run(pipeline, FakeScenario(signals=UNCLEAR_SIGNALS))
+
+    assert not pipeline.answer_approval(incident.id, True)
+    assert not pipeline.answer_approval(incident.id, False)
+    assert incident.state is S.ESCALATED
+
+
+def test_new_experiment_can_start_after_an_escalation(monkeypatch):
+    monkeypatch.setenv("CHAOS_PILOT_EXPERIMENTS_ENABLED", "true")
+    engine = ChaosEngine(
+        task_failure=object(),
+        pipeline=make_pipeline(),
+        scenario_factories={
+            "unclear": lambda: FakeScenario(signals=UNCLEAR_SIGNALS),
+            "bad-deployment": FakeScenario,
+        },
+    )
+
+    escalated = engine.start_scenario("unclear", background=False)
+    assert escalated.state is S.ESCALATED
+    assert not engine._running.locked()
+
+    resolved = engine.start_scenario("bad-deployment", background=False)
+    assert resolved.state is S.RESOLVED
 
 
 def test_action_that_does_not_fit_the_incident_type_never_reaches_remediation():

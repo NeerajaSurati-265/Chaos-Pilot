@@ -167,3 +167,26 @@ def test_failed_precondition_skips_execute_and_records_failed():
     assert result.status is RemediationStatus.FAILED
     assert result.error == "Precondition failed: revision is INACTIVE"
     assert executor.calls == []
+
+
+def test_escalation_decision_is_refused_and_nothing_runs():
+    executor = FakeExecutor("escalate_to_human")
+    engine = RemediationEngine([executor], allowed_actions=["escalate_to_human"])
+    escalation = PolicyDecision("escalate_to_human", Decision.ESCALATE, ("human review",))
+
+    with pytest.raises(RemediationRefused):
+        engine.execute(escalation, approved=True, context=CONTEXT)
+    assert executor.calls == []
+
+
+def test_escalate_to_human_is_refused_even_if_wrongly_marked_auto():
+    executor = FakeExecutor("escalate_to_human")
+    engine = make_engine(executor)
+
+    with pytest.raises(RemediationRefused, match="not an allow-listed"):
+        engine.execute(
+            PolicyDecision("escalate_to_human", Decision.AUTO, ("x",)),
+            approved=False,
+            context=CONTEXT,
+        )
+    assert executor.calls == []

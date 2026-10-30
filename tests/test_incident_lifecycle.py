@@ -69,3 +69,23 @@ def test_verification_needs_at_least_one_passing_check():
         checks=(CheckResult("alb_healthy", True), CheckResult("tasks_running", False))
     ).passed
     assert VerificationResult(checks=(CheckResult("alb_healthy", True),)).passed
+
+
+def test_escalated_is_terminal_and_cannot_reach_remediation_or_resolution():
+    incident = Incident(scenario="config_change")
+    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED, S.ESCALATED)
+
+    assert incident.state is S.ESCALATED
+    assert incident.recovery_seconds is None
+    for state in (S.REMEDIATING, S.VERIFYING, S.RESOLVED, S.AWAITING_APPROVAL):
+        with pytest.raises(InvalidTransition):
+            incident.transition(state)
+    with pytest.raises(InvalidTransition):
+        incident.fail("too late")
+
+
+def test_escalation_is_only_reachable_from_policy_decided():
+    incident = Incident(scenario="config_change")
+
+    with pytest.raises(InvalidTransition):
+        incident.transition(S.ESCALATED)

@@ -1,6 +1,12 @@
+import logging
 import threading
 
-from chaos_pilot.incidents.models import Decision, Incident, IncidentState
+from chaos_pilot.incidents.models import (
+    TERMINAL_STATES,
+    Decision,
+    Incident,
+    IncidentState,
+)
 from chaos_pilot.incidents.store import IncidentStore
 from chaos_pilot.investigator.base import Investigator
 from chaos_pilot.policy.engine import PolicyEngine
@@ -8,6 +14,7 @@ from chaos_pilot.remediation.engine import RemediationEngine, RemediationRefused
 from chaos_pilot.scenarios.base import Scenario
 
 S = IncidentState
+logger = logging.getLogger(__name__)
 
 
 class Pipeline:
@@ -50,11 +57,15 @@ class Pipeline:
         try:
             self._run(incident, scenario)
         except Exception as error:  # Never report success on an unexpected error.
-            if incident.state not in (S.RESOLVED, S.REJECTED, S.FAILED):
+            if incident.state not in TERMINAL_STATES:
                 incident.fail(f"{type(error).__name__}: {error}")
         finally:
             try:
                 scenario.cleanup()
+                if incident.state is S.ESCALATED:
+                    incident.add_note(
+                        "Cleanup completed: injected fault reverted (revert not independently verified)"
+                    )
             except Exception as error:
                 incident.add_note(f"Cleanup failed: {error}")
         return incident
@@ -84,6 +95,14 @@ class Pipeline:
 
         if decision.decision is Decision.DENY:
             incident.transition(S.REJECTED, "; ".join(decision.reasons))
+            return
+
+        if decision.decision is Decision.ESCALATE:
+            # A decision outcome, not a remediation: nothing runs, nothing is verified.
+            incident.human_intervention = True
+            reason = "; ".join(decision.reasons)
+            logger.warning("Incident %s escalated to a human: %s", incident.id, reason)
+            incident.transition(S.ESCALATED, f"Escalated to a human: {reason}")
             return
 
         approved = False

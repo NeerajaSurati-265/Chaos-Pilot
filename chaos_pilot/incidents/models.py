@@ -19,10 +19,16 @@ class IncidentState(str, Enum):
     VERIFYING = "VERIFYING"
     RESOLVED = "RESOLVED"
     REJECTED = "REJECTED"
+    ESCALATED = "ESCALATED"
     FAILED = "FAILED"
 
 
-TERMINAL_STATES = {IncidentState.RESOLVED, IncidentState.REJECTED, IncidentState.FAILED}
+TERMINAL_STATES = {
+    IncidentState.RESOLVED,
+    IncidentState.REJECTED,
+    IncidentState.ESCALATED,
+    IncidentState.FAILED,
+}
 
 ALLOWED_TRANSITIONS = {
     IncidentState.INJECTED: {IncidentState.DETECTED},
@@ -32,6 +38,7 @@ ALLOWED_TRANSITIONS = {
         IncidentState.REMEDIATING,
         IncidentState.AWAITING_APPROVAL,
         IncidentState.REJECTED,
+        IncidentState.ESCALATED,
     },
     IncidentState.AWAITING_APPROVAL: {IncidentState.REMEDIATING, IncidentState.REJECTED},
     IncidentState.REMEDIATING: {IncidentState.VERIFYING},
@@ -67,6 +74,8 @@ class Decision(str, Enum):
     AUTO = "AUTO"
     HUMAN_APPROVAL = "HUMAN_APPROVAL"
     DENY = "DENY"
+    # A human should look at this. Nothing is executed.
+    ESCALATE = "ESCALATE"
 
 
 @dataclass(frozen=True)
