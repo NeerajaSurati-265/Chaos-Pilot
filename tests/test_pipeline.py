@@ -195,3 +195,17 @@ def test_approval_timeout_fails():
     assert incident.state is S.FAILED
     assert incident.failure_reason == "Approval timed out"
     assert executed(pipeline) == []
+
+
+def test_failed_remediation_fails_incident_and_is_never_verified():
+    failing = FakeExecutor(execute_error=RuntimeError("AWS throttled"))
+    scenario = FakeScenario()
+    incident = run(make_pipeline(executors=[failing]), scenario)
+
+    assert incident.state is S.FAILED
+    assert "Remediation failed" in incident.failure_reason
+    assert "AWS throttled" in incident.failure_reason
+    assert incident.remediation is None
+    assert incident.remediation_result.status.value == "FAILED"
+    assert incident.verification is None
+    assert scenario.cleaned_up

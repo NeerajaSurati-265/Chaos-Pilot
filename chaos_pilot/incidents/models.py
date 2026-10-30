@@ -108,6 +108,7 @@ class Incident:
     diagnosis: Diagnosis | None = None
     policy_decision: PolicyDecision | None = None
     remediation: str | None = None
+    remediation_result: Any = None  # RemediationResult; Any avoids a circular import
     verification: VerificationResult | None = None
     human_intervention: bool = False
     failure_reason: str | None = None
@@ -175,6 +176,9 @@ class Incident:
                 list(self.policy_decision.reasons) if self.policy_decision else []
             ),
             "executed_remediation": self.remediation,
+            "remediation_result": (
+                self.remediation_result.to_dict() if self.remediation_result else None
+            ),
             "verification": [
                 {"name": c.name, "passed": c.passed, "detail": c.detail}
                 for c in (self.verification.checks if self.verification else ())

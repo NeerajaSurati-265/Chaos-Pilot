@@ -111,7 +111,8 @@ def test_inject_registers_unhealthy_revision_and_deploys_it(clients, scenario):
     assert scenario.known_good_task_definition == GOOD
     assert scenario.bad_task_definition == BAD
     assert scenario.remediation_context() == RemediationContext(
-        cluster=CLUSTER, service=SERVICE, known_good_task_definition=GOOD
+        cluster=CLUSTER, service=SERVICE, known_good_task_definition=GOOD,
+        known_good_was_healthy=True,
     )
 
 

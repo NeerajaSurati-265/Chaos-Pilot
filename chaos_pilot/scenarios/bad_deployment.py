@@ -50,6 +50,7 @@ class BadDeploymentScenario:
         self.clock = clock
         self.known_good_task_definition: str | None = None
         self.bad_task_definition: str | None = None
+        self.known_good_was_healthy = False
 
     # --- helpers -----------------------------------------------------------
 
@@ -86,6 +87,11 @@ class BadDeploymentScenario:
     def inject(self) -> str:
         service = self._service()
         self.known_good_task_definition = service["taskDefinition"]
+        primary = self._primary_deployment(service)
+        self.known_good_was_healthy = (
+            primary["rolloutState"] == "COMPLETED"
+            and primary["runningCount"] >= service["desiredCount"]
+        )
 
         current = self.ecs.describe_task_definition(
             taskDefinition=self.known_good_task_definition
@@ -152,6 +158,7 @@ class BadDeploymentScenario:
             cluster=self.cluster,
             service=self.service,
             known_good_task_definition=self.known_good_task_definition,
+            known_good_was_healthy=self.known_good_was_healthy,
         )
 
     def verify(self) -> VerificationResult:

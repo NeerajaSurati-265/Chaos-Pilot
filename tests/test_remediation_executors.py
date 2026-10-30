@@ -3,7 +3,7 @@ import pytest
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
-from chaos_pilot.remediation.engine import RemediationContext
+from chaos_pilot.remediation.engine import PreconditionFailed, RemediationContext
 from chaos_pilot.remediation.executors import (
     RestoreSecurityGroupRule,
     RollbackToPreviousRevision,
@@ -39,6 +39,62 @@ def ec2():
     with Stubber(client) as stub:
         yield client, stub
         stub.assert_no_pending_responses()
+
+
+def rollback_context(healthy=True):
+    return RemediationContext(
+        cluster=CLUSTER, service=SERVICE, known_good_task_definition=GOOD,
+        known_good_was_healthy=healthy,
+    )
+
+
+def expect_rollback_preconditions(stub, revision_status="ACTIVE", service_status="ACTIVE"):
+    stub.add_response(
+        "describe_task_definition",
+        {"taskDefinition": {"taskDefinitionArn": GOOD, "status": revision_status}},
+        {"taskDefinition": GOOD},
+    )
+    stub.add_response(
+        "describe_services",
+        {"services": [{"serviceName": SERVICE, "status": service_status}]},
+        {"cluster": CLUSTER, "services": [SERVICE]},
+    )
+
+
+def test_rollback_preconditions_pass_for_active_healthy_revision(ecs):
+    client, stub = ecs
+    expect_rollback_preconditions(stub)
+
+    RollbackToPreviousRevision(ecs_client=client).check_preconditions(rollback_context())
+
+
+def test_rollback_precondition_fails_if_revision_was_not_healthy(ecs):
+    client, _ = ecs
+
+    with pytest.raises(PreconditionFailed, match="not recorded as healthy"):
+        RollbackToPreviousRevision(ecs_client=client).check_preconditions(
+            rollback_context(healthy=False)
+        )
+
+
+def test_rollback_precondition_fails_if_revision_is_inactive(ecs):
+    client, stub = ecs
+    stub.add_response(
+        "describe_task_definition",
+        {"taskDefinition": {"taskDefinitionArn": GOOD, "status": "INACTIVE"}},
+        {"taskDefinition": GOOD},
+    )
+
+    with pytest.raises(PreconditionFailed, match="INACTIVE"):
+        RollbackToPreviousRevision(ecs_client=client).check_preconditions(rollback_context())
+
+
+def test_rollback_precondition_fails_if_service_is_not_active(ecs):
+    client, stub = ecs
+    expect_rollback_preconditions(stub, service_status="DRAINING")
+
+    with pytest.raises(PreconditionFailed, match="not ACTIVE"):
+        RollbackToPreviousRevision(ecs_client=client).check_preconditions(rollback_context())
 
 
 def test_rollback_updates_service_to_known_good_revision(ecs):
@@ -101,3 +157,26 @@ def test_restore_refuses_without_security_groups(ec2):
 
     with pytest.raises(RuntimeError, match="security_group_id"):
         RestoreSecurityGroupRule(ec2_client=client).execute(RemediationContext(port=80))
+
+
+def test_restore_preconditions_pass_when_both_groups_exist(ec2):
+    client, stub = ec2
+    stub.add_response(
+        "describe_security_groups",
+        {"SecurityGroups": [{"GroupId": ECS_SG}, {"GroupId": ALB_SG}]},
+        {"GroupIds": [ECS_SG, ALB_SG]},
+    )
+
+    RestoreSecurityGroupRule(ec2_client=client).check_preconditions(SG_CONTEXT)
+
+
+def test_restore_precondition_fails_if_a_group_is_missing(ec2):
+    client, stub = ec2
+    stub.add_response(
+        "describe_security_groups",
+        {"SecurityGroups": [{"GroupId": ECS_SG}]},
+        {"GroupIds": [ECS_SG, ALB_SG]},
+    )
+
+    with pytest.raises(PreconditionFailed):
+        RestoreSecurityGroupRule(ec2_client=client).check_preconditions(SG_CONTEXT)

@@ -1,7 +1,13 @@
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from chaos_pilot.remediation.engine import RemediationContext
+from chaos_pilot.remediation.engine import PreconditionFailed, RemediationContext
+
+# Bounded so a hung AWS call fails the remediation instead of blocking the pipeline.
+AWS_CONFIG = Config(
+    connect_timeout=5, read_timeout=15, retries={"max_attempts": 2, "mode": "standard"}
+)
 
 
 def _require(context: RemediationContext, *fields: str):
@@ -43,8 +49,28 @@ class RollbackToPreviousRevision:
     def ecs(self):
         # Created on first use, so wiring the engine needs no AWS credentials.
         if self._ecs is None:
-            self._ecs = boto3.client("ecs")
+            self._ecs = boto3.client("ecs", config=AWS_CONFIG)
         return self._ecs
+
+    def check_preconditions(self, context: RemediationContext) -> None:
+        _require(context, "cluster", "service", "known_good_task_definition")
+        if not context.known_good_was_healthy:
+            raise PreconditionFailed(
+                f"{context.known_good_task_definition} was not recorded as healthy before injection"
+            )
+        revision = self.ecs.describe_task_definition(
+            taskDefinition=context.known_good_task_definition
+        )["taskDefinition"]
+        if revision.get("status") != "ACTIVE":
+            raise PreconditionFailed(
+                f"{context.known_good_task_definition} is {revision.get('status')}, not ACTIVE"
+            )
+        response = self.ecs.describe_services(
+            cluster=context.cluster, services=[context.service]
+        )
+        services = response.get("services", [])
+        if not services or services[0].get("status") != "ACTIVE":
+            raise PreconditionFailed(f"Service {context.service} is not ACTIVE")
 
     def execute(self, context: RemediationContext) -> str:
         _require(context, "cluster", "service", "known_good_task_definition")
@@ -67,8 +93,17 @@ class RestoreSecurityGroupRule:
     @property
     def ec2(self):
         if self._ec2 is None:
-            self._ec2 = boto3.client("ec2")
+            self._ec2 = boto3.client("ec2", config=AWS_CONFIG)
         return self._ec2
+
+    def check_preconditions(self, context: RemediationContext) -> None:
+        _require(context, "security_group_id", "source_security_group_id", "port")
+        # Raises InvalidGroup.NotFound (a FAILED result) if either group is gone.
+        found = self.ec2.describe_security_groups(
+            GroupIds=[context.security_group_id, context.source_security_group_id]
+        )["SecurityGroups"]
+        if len(found) != 2:
+            raise PreconditionFailed("Target or source security group does not exist")
 
     def execute(self, context: RemediationContext) -> str:
         _require(context, "security_group_id", "source_security_group_id", "port")

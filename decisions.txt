@@ -47,6 +47,27 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-10-27 | uncommitted | Remediation engine: structured result, preconditions, FAILED
+  What:  RemediationResult now carries action, parameters, started_at, finished_at, status
+         (SUCCEEDED / FAILED), detail and error (replaces executed/detail). Executors gained
+         check_preconditions(). The engine runs it before execute() and turns any exception,
+         AWS errors included, into a FAILED result. Refusals (DENY, missing approval, not
+         allow-listed, no executor) still raise RemediationRefused and nothing runs.
+         Rollback precondition: known good revision was recorded healthy at injection, is
+         ACTIVE, and the service is ACTIVE. Restore-rule precondition: both security groups
+         exist. Executor boto3 clients use connect 5s / read 15s timeouts, 2 attempts.
+         BadDeploymentScenario records known_good_was_healthy (rollout COMPLETED and running >=
+         desired before injection) in RemediationContext. Pipeline fails the incident on a
+         FAILED result and skips verification. Incident keeps remediation_result and the
+         report shows it as "remediation_result".
+  Why:   D5. SUCCEEDED only means the AWS change was applied; Verification (D6) still decides
+         recovery. A failed call must never look like success.
+  Files: chaos_pilot/remediation/engine.py, chaos_pilot/remediation/executors.py,
+         chaos_pilot/scenarios/bad_deployment.py, chaos_pilot/core/pipeline.py,
+         chaos_pilot/incidents/models.py, tests/test_remediation_engine.py,
+         tests/test_remediation_executors.py, tests/test_bad_deployment.py,
+         tests/test_pipeline.py
+
 2026-10-27 | uncommitted | LLM investigator
   What:  Added chaos_pilot/investigator/llm.py (LLMInvestigator). Claude call with a JSON
          schema whose recommended_action is an enum of the actions that have executors plus
@@ -298,6 +319,12 @@ Format: date | commit | component
   - After RestoreSecurityGroupRule runs, ConfigChangeScenario.rule_removed is still True, so
     cleanup() calls authorize_security_group_ingress once more and gets
     InvalidPermission.Duplicate, which is tolerated. Harmless, one extra AWS call.
+
+
+  - Remediation runs on whatever AWS credentials the process has. IAM needed: ecs:UpdateService,
+    ecs:DescribeTaskDefinition, ecs:DescribeServices, ec2:AuthorizeSecurityGroupIngress,
+    ec2:DescribeSecurityGroups. No Terraform defines this role yet.
+  - Scenario and experiment clients (not the executors) still have no explicit AWS timeouts.
 
 
 OPEN QUESTIONS

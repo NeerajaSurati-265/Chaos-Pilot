@@ -104,6 +104,10 @@ class Pipeline:
         except RemediationRefused as refusal:
             incident.fail(f"Remediation refused: {refusal}")
             return
+        incident.remediation_result = result
+        if not result.succeeded:
+            incident.fail(f"Remediation failed: {result.error}")
+            return
         incident.remediation = result.detail
 
         incident.transition(S.VERIFYING, incident.remediation)
