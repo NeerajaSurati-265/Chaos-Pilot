@@ -17,6 +17,9 @@ class RemediationContext:
     port: int | None = None
     # Recorded at injection: the known-good revision was fully rolled out before the change.
     known_good_was_healthy: bool = False
+    # Recorded at injection: the ALB-to-ECS rule existed and was captured before it was removed.
+    known_good_rule_captured: bool = False
+    rule_description: str | None = None
 
 
 class RemediationStatus(str, Enum):

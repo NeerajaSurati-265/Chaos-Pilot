@@ -3,8 +3,16 @@ import pytest
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
-from chaos_pilot.remediation.engine import PreconditionFailed, RemediationContext
+from chaos_pilot.incidents.models import Decision, PolicyDecision
+from chaos_pilot.policy.engine import DEFAULT_RULES
+from chaos_pilot.remediation.engine import (
+    PreconditionFailed,
+    RemediationContext,
+    RemediationEngine,
+    RemediationStatus,
+)
 from chaos_pilot.remediation.executors import (
+    ingress_permission,
     RestoreSecurityGroupRule,
     RollbackToPreviousRevision,
 )
@@ -21,7 +29,12 @@ PERMISSION = {
     "UserIdGroupPairs": [{"GroupId": ALB_SG}],
 }
 SG_CONTEXT = RemediationContext(
-    security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80
+    security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80,
+    known_good_rule_captured=True,
+)
+DESCRIBED_CONTEXT = RemediationContext(
+    security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80,
+    known_good_rule_captured=True, rule_description="Allow HTTP traffic from ALB",
 )
 
 
@@ -180,3 +193,84 @@ def test_restore_precondition_fails_if_a_group_is_missing(ec2):
 
     with pytest.raises(PreconditionFailed):
         RestoreSecurityGroupRule(ec2_client=client).check_preconditions(SG_CONTEXT)
+
+
+def test_restore_precondition_fails_if_known_good_rule_was_not_captured(ec2):
+    client, _ = ec2  # no responses queued: any AWS call would fail the test
+    uncaptured = RemediationContext(
+        security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80
+    )
+
+    with pytest.raises(PreconditionFailed, match="not captured"):
+        RestoreSecurityGroupRule(ec2_client=client).check_preconditions(uncaptured)
+
+
+def test_restore_without_captured_rule_makes_no_aws_call_and_fails(ec2):
+    client, _ = ec2
+    engine = RemediationEngine([RestoreSecurityGroupRule(ec2_client=client)], DEFAULT_RULES)
+    uncaptured = RemediationContext(
+        security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80
+    )
+
+    result = engine.execute(
+        PolicyDecision("restore_security_group_rule", Decision.HUMAN_APPROVAL, ("x",)),
+        approved=True,
+        context=uncaptured,
+    )
+
+    assert result.status is RemediationStatus.FAILED
+    assert "not captured" in result.error
+
+
+def test_restore_re_adds_the_captured_rule_description(ec2):
+    client, stub = ec2
+    permission = {
+        **PERMISSION,
+        "UserIdGroupPairs": [{"GroupId": ALB_SG, "Description": "Allow HTTP traffic from ALB"}],
+    }
+    stub.add_response(
+        "authorize_security_group_ingress", {"Return": True},
+        {"GroupId": ECS_SG, "IpPermissions": [permission]},
+    )
+
+    RestoreSecurityGroupRule(ec2_client=client).execute(DESCRIBED_CONTEXT)
+
+
+def test_restore_through_the_engine_treats_an_existing_rule_as_success(ec2):
+    client, stub = ec2
+    stub.add_response(
+        "describe_security_groups",
+        {"SecurityGroups": [{"GroupId": ECS_SG}, {"GroupId": ALB_SG}]},
+        {"GroupIds": [ECS_SG, ALB_SG]},
+    )
+    stub.add_client_error(
+        "authorize_security_group_ingress",
+        service_error_code="InvalidPermission.Duplicate",
+    )
+    engine = RemediationEngine([RestoreSecurityGroupRule(ec2_client=client)], DEFAULT_RULES)
+
+    result = engine.execute(
+        PolicyDecision("restore_security_group_rule", Decision.HUMAN_APPROVAL, ("x",)),
+        approved=True,
+        context=SG_CONTEXT,
+    )
+
+    assert result.succeeded
+    assert result.error is None
+
+
+@pytest.mark.parametrize("description", [None, ""])
+def test_restore_omits_the_description_field_when_there_is_none(ec2, description):
+    client, stub = ec2
+    stub.add_response(
+        "authorize_security_group_ingress", {"Return": True},
+        {"GroupId": ECS_SG, "IpPermissions": [PERMISSION]},  # exact: no "Description" key
+    )
+    context = RemediationContext(
+        security_group_id=ECS_SG, source_security_group_id=ALB_SG, port=80,
+        known_good_rule_captured=True, rule_description=description,
+    )
+
+    RestoreSecurityGroupRule(ec2_client=client).execute(context)
+
+    assert "Description" not in ingress_permission(ALB_SG, 80, description)["UserIdGroupPairs"][0]

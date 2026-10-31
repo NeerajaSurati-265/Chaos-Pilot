@@ -50,6 +50,9 @@ class ConfigChangeScenario:
         self.sleep = sleep
         self.clock = clock
         self.rule_removed = False
+        # Captured from AWS just before the rule is removed, so the restore is exact.
+        self.known_good_rule_captured = False
+        self.rule_description: str | None = None
 
     # --- helpers -----------------------------------------------------------
 
@@ -57,7 +60,8 @@ class ConfigChangeScenario:
     def _permission(self) -> dict:
         return ingress_permission(self.alb_security_group_id, self.port)
 
-    def _rule_present(self) -> bool:
+    def _find_rule(self) -> dict | None:
+        """The ALB-to-ECS source pair as AWS has it now, or None if the rule is missing."""
         group = self.ec2.describe_security_groups(
             GroupIds=[self.ecs_security_group_id]
         )["SecurityGroups"][0]
@@ -66,13 +70,14 @@ class ConfigChangeScenario:
                 permission.get("IpProtocol") == "tcp"
                 and permission.get("FromPort") == self.port
                 and permission.get("ToPort") == self.port
-                and any(
-                    pair.get("GroupId") == self.alb_security_group_id
-                    for pair in permission.get("UserIdGroupPairs", [])
-                )
             ):
-                return True
-        return False
+                for pair in permission.get("UserIdGroupPairs", []):
+                    if pair.get("GroupId") == self.alb_security_group_id:
+                        return pair
+        return None
+
+    def _rule_present(self) -> bool:
+        return self._find_rule() is not None
 
     def _target_health(self) -> dict[str, int]:
         response = self.elbv2.describe_target_health(
@@ -100,18 +105,25 @@ class ConfigChangeScenario:
 
     def _restore_rule(self):
         restore_ingress_rule(
-            self.ec2, self.ecs_security_group_id, self.alb_security_group_id, self.port
+            self.ec2,
+            self.ecs_security_group_id,
+            self.alb_security_group_id,
+            self.port,
+            self.rule_description,
         )
         self.rule_removed = False
 
     # --- scenario steps ----------------------------------------------------
 
     def inject(self) -> str:
-        if not self._rule_present():
+        known_good = self._find_rule()
+        if known_good is None:
             raise RuntimeError(
                 "The ALB-to-ECS rule is already missing; refusing to start "
                 "from an unknown state"
             )
+        self.rule_description = known_good.get("Description")
+        self.known_good_rule_captured = True
         self.ec2.revoke_security_group_ingress(
             GroupId=self.ecs_security_group_id,
             IpPermissions=[self._permission],
@@ -146,6 +158,8 @@ class ConfigChangeScenario:
             security_group_id=self.ecs_security_group_id,
             source_security_group_id=self.alb_security_group_id,
             port=self.port,
+            known_good_rule_captured=self.known_good_rule_captured,
+            rule_description=self.rule_description,
         )
 
     def verify(self) -> VerificationResult:

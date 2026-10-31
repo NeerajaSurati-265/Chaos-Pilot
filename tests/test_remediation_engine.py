@@ -93,6 +93,7 @@ def test_auto_executes_once():
         "service": "chaos-pilot-service",
         "known_good_task_definition": "app:1",
         "known_good_was_healthy": False,
+        "known_good_rule_captured": False,
     }
     assert result.started_at <= result.finished_at
 
@@ -115,7 +116,7 @@ def test_allow_listed_action_without_executor_is_refused():
 
     with pytest.raises(RemediationRefused, match="No executor"):
         make_engine(executor).execute(
-            decision(Decision.AUTO, action="restore_dependency"),
+            decision(Decision.AUTO, action="restore_security_group_rule"),
             approved=True,
             context=CONTEXT,
         )
@@ -188,5 +189,17 @@ def test_escalate_to_human_is_refused_even_if_wrongly_marked_auto():
             PolicyDecision("escalate_to_human", Decision.AUTO, ("x",)),
             approved=False,
             context=CONTEXT,
+        )
+    assert executor.calls == []
+
+
+@pytest.mark.parametrize("action", ["restore_known_good_config", "restore_dependency"])
+@pytest.mark.parametrize("kind", [Decision.AUTO, Decision.HUMAN_APPROVAL])
+def test_actions_removed_from_the_allow_list_are_refused(action, kind):
+    executor = FakeExecutor(action)
+
+    with pytest.raises(RemediationRefused, match="not an allow-listed"):
+        make_engine(executor).execute(
+            decision(kind, action=action), approved=True, context=CONTEXT
         )
     assert executor.calls == []

@@ -16,20 +16,31 @@ def _require(context: RemediationContext, *fields: str):
         raise RuntimeError(f"Not recorded before injection: {', '.join(missing)}")
 
 
-def ingress_permission(source_security_group_id: str, port: int) -> dict:
+def ingress_permission(
+    source_security_group_id: str, port: int, description: str | None = None
+) -> dict:
+    pair = {"GroupId": source_security_group_id}
+    if description:
+        pair["Description"] = description
     return {
         "IpProtocol": "tcp",
         "FromPort": port,
         "ToPort": port,
-        "UserIdGroupPairs": [{"GroupId": source_security_group_id}],
+        "UserIdGroupPairs": [pair],
     }
 
 
-def restore_ingress_rule(ec2, security_group_id: str, source_security_group_id: str, port: int):
+def restore_ingress_rule(
+    ec2,
+    security_group_id: str,
+    source_security_group_id: str,
+    port: int,
+    description: str | None = None,
+):
     try:
         ec2.authorize_security_group_ingress(
             GroupId=security_group_id,
-            IpPermissions=[ingress_permission(source_security_group_id, port)],
+            IpPermissions=[ingress_permission(source_security_group_id, port, description)],
         )
     except ClientError as error:
         # Already there means the desired state holds.
@@ -98,6 +109,10 @@ class RestoreSecurityGroupRule:
 
     def check_preconditions(self, context: RemediationContext) -> None:
         _require(context, "security_group_id", "source_security_group_id", "port")
+        if not context.known_good_rule_captured:
+            raise PreconditionFailed(
+                "The known-good ingress rule was not captured before injection"
+            )
         # Raises InvalidGroup.NotFound (a FAILED result) if either group is gone.
         found = self.ec2.describe_security_groups(
             GroupIds=[context.security_group_id, context.source_security_group_id]
@@ -112,6 +127,7 @@ class RestoreSecurityGroupRule:
             context.security_group_id,
             context.source_security_group_id,
             context.port,
+            context.rule_description,
         )
         return (
             f"Restored tcp/{context.port} from {context.source_security_group_id} "

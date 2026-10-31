@@ -47,6 +47,31 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-10-31 | uncommitted | Added progress.md
+  What:  New progress.md at the repo root summarising done, uncommitted and pending work.
+  Why:   Quick status view; derived from this log, projectcontext.md and git history.
+  Files: progress.md
+
+2026-10-31 | uncommitted | Config Change restore audit; dead allow-list entries removed
+  What:  An executor for the Config Change fix already existed (restore_security_group_rule).
+         Audit gaps fixed: the known-good rule was never captured before injection, and the
+         restored rule lost its description. inject() now reads the rule from the describe call
+         it already made, records known_good_rule_captured and rule_description in
+         RemediationContext, and the executor refuses (PreconditionFailed, no AWS call) without
+         it; restore and cleanup re-add the description. Option A: restore_known_good_config
+         (an earlier name for the same fix, no executor, in no scenario) and restore_dependency
+         (belongs to the unbuilt Dependency Failure) removed from DEFAULT_RULES, which is also
+         the remediation allow-list, so both layers now refuse them. Re-add an action only with
+         its executor and a SCENARIO_ACTIONS entry. Not fixed (reported): ConfigChangeScenario
+         clients still use default boto3 timeouts (Session B item 4). projectcontext.md still
+         says the restore_known_good_config executor is missing; that is stale.
+  Why:   D4, D5. An allow-listed action with no executor is a latent hazard. No policy outcome
+         changed.
+  Files: chaos_pilot/remediation/engine.py, chaos_pilot/remediation/executors.py,
+         chaos_pilot/scenarios/config_change.py, chaos_pilot/policy/engine.py,
+         tests/test_config_change.py, tests/test_remediation_executors.py,
+         tests/test_remediation_engine.py, tests/test_policy_engine.py
+
 2026-10-31 | uncommitted | Escalation: escalate_to_human gets a real path
   What:  New terminal state ESCALATED (POLICY_DECIDED -> ESCALATED only) and Decision.ESCALATE.
          Policy turns escalate_to_human into ESCALATE for every known scenario, whatever the
@@ -229,8 +254,7 @@ Format: date | commit | component
     auto_allowed:
       rollback_to_previous_revision   reversible, LOW,    auto allowed
       restore_security_group_rule     reversible, MEDIUM, approval required
-      restore_known_good_config       reversible, MEDIUM, approval required
-      restore_dependency              reversible, MEDIUM, approval required
+      (restore_known_good_config and restore_dependency were removed 2026-10-31)
   - Order: kill switch off -> DENY; action not allow-listed -> DENY; otherwise collect
     reasons (approval required by rule, not reversible, blast radius not LOW, confidence
     below 0.70). Any reason -> HUMAN_APPROVAL; none -> AUTO.
@@ -313,11 +337,8 @@ Format: date | commit | component
     (lifecycle unchanged), so the engine's DENY check is a second guard.
   - allowed_actions comes from DEFAULT_RULES so there is one allow-list (see 5 for the
     known issue with this).
-  - restore_dependency (and restore_known_good_config) are allow-listed but have no
-    executor: no built scenario needs them and the investigator never recommends them. If
-    either is ever selected, the engine refuses with "No executor is registered" and the
-    incident ends FAILED. Why they were allow-listed in 5b75eb4 is not recorded; see
-    OPEN QUESTIONS.
+  - restore_dependency and restore_known_good_config were allow-listed without executors in
+    5b75eb4; removed from DEFAULT_RULES on 2026-10-31 (see the change log).
 
 3.7 Task-failure experiment (chaos_pilot/experiments/task_failure.py)
   - Stops a task only if it belongs to the configured service in the configured cluster;
@@ -357,8 +378,6 @@ Format: date | commit | component
 
 OPEN QUESTIONS
 ------------------------------------------------------------------------------------------------
-  - Why were restore_dependency and restore_known_good_config allow-listed in 5b75eb4 before
-    any scenario uses them? Reserved for Dependency Failure? Not recorded.
   - What should NOTIFY send, and where? Nothing in the code or history says.
   - Should allowed_actions come from the policy instance's rules (policy.rules) instead of
     DEFAULT_RULES?

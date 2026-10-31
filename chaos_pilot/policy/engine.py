@@ -26,12 +26,8 @@ DEFAULT_RULES: dict[str, ActionRule] = {
     "restore_security_group_rule": ActionRule(
         reversible=True, blast_radius=BlastRadius.MEDIUM, auto_allowed=False
     ),
-    "restore_known_good_config": ActionRule(
-        reversible=True, blast_radius=BlastRadius.MEDIUM, auto_allowed=False
-    ),
-    "restore_dependency": ActionRule(
-        reversible=True, blast_radius=BlastRadius.MEDIUM, auto_allowed=False
-    ),
+    # Add an action here only together with its executor and a SCENARIO_ACTIONS entry.
+    # (restore_dependency returns with the Dependency Failure scenario.)
 }
 
 # Which allow-listed actions fit which incident type. An action outside its incident's

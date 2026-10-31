@@ -102,3 +102,18 @@ def test_escalate_to_human_is_never_an_executable_action():
 @pytest.mark.parametrize("scenario_class", REGISTERED_SCENARIOS)
 def test_every_registered_scenario_has_a_permitted_actions_entry(scenario_class):
     assert scenario_class.name in SCENARIO_ACTIONS
+
+
+@pytest.mark.parametrize("action", ["restore_known_good_config", "restore_dependency"])
+@pytest.mark.parametrize("scenario", ["bad_deployment", "config_change"])
+def test_actions_removed_from_the_allow_list_are_denied(action, scenario):
+    result = engine.decide(diagnosis(action, 1.0), True, scenario=scenario)
+
+    assert result.decision is Decision.DENY
+    assert "not an allow-listed action" in result.reasons[0]
+
+
+def test_every_allow_listed_action_is_permitted_for_some_scenario():
+    permitted = set().union(*SCENARIO_ACTIONS.values())
+
+    assert set(DEFAULT_RULES) == permitted
