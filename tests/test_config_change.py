@@ -3,6 +3,7 @@ import time
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from chaos_pilot.core.pipeline import Pipeline
@@ -144,6 +145,38 @@ def test_inject_refuses_when_rule_already_missing(clients, scenario):
 
     with pytest.raises(RuntimeError):
         scenario.inject()
+
+    # The stubber has no revoke queued, so a revoke call would have raised.
+    assert not scenario.rule_removed
+    assert not scenario.known_good_rule_captured
+
+
+def test_inject_tolerates_revoke_not_found_when_the_rule_is_confirmed_gone(clients, scenario):
+    # A retry after a timed-out revoke that AWS had already applied.
+    (_, ec2_stub), _, _ = clients
+    expect_rule(ec2_stub, True)
+    ec2_stub.add_client_error(
+        "revoke_security_group_ingress", service_error_code="InvalidPermission.NotFound"
+    )
+    expect_rule(ec2_stub, False)
+
+    scenario.inject()
+
+    assert scenario.rule_removed
+
+
+def test_inject_does_not_tolerate_revoke_not_found_when_the_rule_is_still_there(clients, scenario):
+    (_, ec2_stub), _, _ = clients
+    expect_rule(ec2_stub, True)
+    ec2_stub.add_client_error(
+        "revoke_security_group_ingress", service_error_code="InvalidPermission.NotFound"
+    )
+    expect_rule(ec2_stub, True)
+
+    with pytest.raises(ClientError):
+        scenario.inject()
+
+    assert not scenario.rule_removed
 
 
 def test_detection_leads_to_approval_required_restore(clients, scenario):

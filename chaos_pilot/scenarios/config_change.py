@@ -1,8 +1,9 @@
 import time
 from typing import Callable
 
-import boto3
+from botocore.exceptions import ClientError
 
+from chaos_pilot.core.aws import make_client
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
 from chaos_pilot.remediation.engine import RemediationContext
 from chaos_pilot.remediation.executors import ingress_permission, restore_ingress_rule
@@ -41,9 +42,9 @@ class ConfigChangeScenario:
         self.ecs_security_group_id = ecs_security_group_id
         self.alb_security_group_id = alb_security_group_id
         self.port = port
-        self.ec2 = ec2_client or boto3.client("ec2")
-        self.ecs = ecs_client or boto3.client("ecs")
-        self.elbv2 = elbv2_client or boto3.client("elbv2")
+        self.ec2 = ec2_client or make_client("ec2")
+        self.ecs = ecs_client or make_client("ecs")
+        self.elbv2 = elbv2_client or make_client("elbv2")
         self.detect_timeout = detect_timeout
         self.verify_timeout = verify_timeout
         self.poll_interval = poll_interval
@@ -124,10 +125,18 @@ class ConfigChangeScenario:
             )
         self.rule_description = known_good.get("Description")
         self.known_good_rule_captured = True
-        self.ec2.revoke_security_group_ingress(
-            GroupId=self.ecs_security_group_id,
-            IpPermissions=[self._permission],
-        )
+        try:
+            self.ec2.revoke_security_group_ingress(
+                GroupId=self.ecs_security_group_id,
+                IpPermissions=[self._permission],
+            )
+        except ClientError as error:
+            # A retry after a timed-out call that was applied finds the rule gone. The
+            # rule was confirmed present above; accept NotFound only if it is now absent.
+            if error.response["Error"]["Code"] != "InvalidPermission.NotFound":
+                raise
+            if self._rule_present():
+                raise
         self.rule_removed = True
         return (
             f"Removed tcp/{self.port} from {self.alb_security_group_id} "
