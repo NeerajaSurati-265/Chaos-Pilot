@@ -1,7 +1,7 @@
 # Chaos-Pilot: Progress
 
 Last updated: 2026-11-01. Sources: `decisions.txt`, `projectcontext.md`, git history.
-Tests: **131 passing** (mocked AWS only).
+Tests: **173 passing** (mocked AWS only).
 
 ## Workflow status
 
@@ -44,6 +44,17 @@ Tests: **131 passing** (mocked AWS only).
 - Files: core/aws.py (new), scenarios/bad_deployment.py, scenarios/config_change.py,
   experiments/task_failure.py, remediation/executors.py, tests/test_aws_client.py (new),
   tests/test_config_change.py, decisions.txt, projectcontext.md, progress.md.
+
+## Runtime kill switch (done, not yet committed)
+
+- `chaos_pilot/core/killswitch.py` (new): in-memory switch, `GET /kill-switch`,
+  `POST /kill-switch/engage`, `POST /kill-switch/release`; blocks new starts with 403.
+- Running incidents abort at checkpoints (before inject, after approval wait, before remediation,
+  before verification, every polling iteration), run cleanup, and end in the new terminal state
+  `ABORTED`. Engage sticks for the run in flight; releasing does not resume anything.
+- Endpoints are unauthenticated and a restart releases the switch (local MVP only).
+- Files: core/killswitch.py, tests/test_kill_switch.py (new); core/pipeline.py, core/engine.py,
+  incidents/models.py, app/main.py, scenarios/bad_deployment.py, scenarios/config_change.py.
 
 ## Scenarios
 

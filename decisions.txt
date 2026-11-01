@@ -47,6 +47,70 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-11-01 | uncommitted | Runtime kill switch (Session B item 5)
+  What:  New chaos_pilot/core/killswitch.py: KillSwitch (threading.Event + reason, engaged_at,
+         engage_count), RunGuard and Aborted. One KillSwitch is created in ChaosEngine and
+         shared with Pipeline (Pipeline(kill_switch=...), default a fresh one). The env gate
+         CHAOS_PILOT_EXPERIMENTS_ENABLED is unchanged and checked first.
+         Endpoints: GET /kill-switch, POST /kill-switch/engage?reason=, POST /kill-switch/release.
+         GET /status adds kill_switch_engaged. While engaged, start_scenario and the raw
+         task-failure endpoint raise ExperimentNotAllowed("Kill switch engaged: <reason>"),
+         which the API already returns as 403; no incident is created.
+         Checkpoints (AWS calls are never interrupted, abort happens only here): before
+         inject(), after the approval wait, before remediation, before verification, and at the
+         top of every scenario _poll iteration (detect and verify, both scenarios). The sleep
+         in _poll is replaced by event.wait(poll_interval) when a guard is set; without a guard
+         the injected sleep is still used, so existing tests are unchanged. The approval wait
+         is woken by an on_engage callback that sets every approval Event, then the guard is
+         checked before the answer is read, so an engage beats a racing approve.
+         Engage sticks for the run in flight: engage_count rises on each released -> engaged
+         change; Pipeline.start() captures it in a RunGuard, and a checkpoint aborts if the
+         switch is engaged OR the count changed, so engage-then-release before the next
+         checkpoint still aborts. Engaging while engaged keeps the first reason, count unchanged.
+         Pipeline.run hands the guard to scenarios that have an abort_guard attribute.
+         New terminal state ABORTED (not FAILED): an operator stop is a deliberate outcome, not
+         a malfunction, so FAILED counts and the future dashboard stay meaningful (same reasoning
+         as ESCALATED). Incident.abort(reason) mirrors fail(): allowed from any non-terminal
+         state, raises InvalidTransition from a terminal one. ALLOWED_TRANSITIONS is not edited
+         (FAILED is not in it either), so transition() cannot enter ABORTED and nothing can
+         leave it. Incident gets abort_reason, also in report().
+         On abort: the timeline records the checkpoint, the state at that time and the reason;
+         cleanup runs (it does not consult the kill switch) and its result is a timeline note
+         ("Cleanup completed ... (revert not independently verified)" or "Cleanup failed: ...").
+         The inject-started flag is set immediately before inject() is called, so a failed or
+         aborted inject still gets cleanup. If the abort came before inject() was called,
+         cleanup is skipped with the note "Nothing was injected; cleanup skipped" (ConfigChange
+         cleanup would otherwise re-add a rule it never removed if the rule was absent).
+         Abort after remediation ran: the incident is ABORTED, never RESOLVED, verification is
+         skipped, remediation_result is kept and the note says the recovery was NOT verified.
+         This is safe because both executors only move toward the recorded known-good state and
+         cleanup does the same idempotently (BadDeployment cleanup does nothing if already on
+         known-good; ConfigChange tolerates InvalidPermission.Duplicate). An abort during
+         verify discards the partial checks (the poll raises before returning). If verify
+         finishes with proof while an engage lands during its last check, RESOLVED stands:
+         there is no checkpoint after verify.
+         Releasing the switch does not resume anything; an ABORTED incident stays ABORTED.
+         A release during cleanup cannot overlap a new start: the one-experiment lock is held
+         until pipeline.run, including cleanup, returns.
+         Aborted is not swallowed. Places checked for except clauses: scenarios/bad_deployment.py
+         (none); scenarios/config_change.py:133 (ClientError only, inside inject); both _poll
+         methods and detect/verify check functions (none); remediation/engine.py:118 (except
+         Exception, but no checkpoint runs inside remediation, so Aborted cannot arise there);
+         remediation/executors.py:39 (ClientError only); investigator/llm.py:66 (except
+         Exception, no checkpoint inside); core/engine.py:138 (re-raises); core/pipeline.py (the
+         new `except Aborted` sits before `except Exception`). A test asserts Aborted propagates
+         out of detect and verify. Aborted subclasses Exception, so a future broad
+         `except Exception` around a checkpoint would swallow it.
+         Worst-case abort latency is one in-flight check (its AWS calls are bounded by
+         core/aws.py), not the poll interval.
+  Limits: The switch is in memory only, so a process restart releases it. The endpoints are
+         unauthenticated (like approve/reject); acceptable for the local MVP only, and release
+         is the risky direction. Auth is out of scope for this item.
+  Files: core/killswitch.py (new), core/pipeline.py, core/engine.py, incidents/models.py,
+         app/main.py, scenarios/bad_deployment.py, scenarios/config_change.py,
+         tests/test_kill_switch.py (new), decisions.txt, projectcontext.md, progress.md.
+  Tests: 42 new (mocked AWS, botocore Stubber); full suite 173 passed (was 131).
+
 2026-11-01 | uncommitted | Shared boto3 client factory with bounded timeouts and retries
   What:  New chaos_pilot/core/aws.py holds the only AWS_CONFIG and make_client(service_name,
          region_name=None), the only place boto3.client is called. All 8 app clients use it:

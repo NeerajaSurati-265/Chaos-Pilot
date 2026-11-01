@@ -1,6 +1,7 @@
 import logging
 import threading
 
+from chaos_pilot.core.killswitch import Aborted, KillSwitch, RunGuard
 from chaos_pilot.incidents.models import (
     TERMINAL_STATES,
     Decision,
@@ -30,6 +31,7 @@ class Pipeline:
         remediation: RemediationEngine,
         experiments_enabled,
         approval_timeout: float = 900,
+        kill_switch: KillSwitch | None = None,
     ):
         self.store = store
         self.investigator = investigator
@@ -39,11 +41,21 @@ class Pipeline:
         self.approval_timeout = approval_timeout
         self._approvals: dict[str, threading.Event] = {}
         self._approved: dict[str, bool] = {}
+        self.kill_switch = kill_switch or KillSwitch()
+        self.kill_switch.on_engage(self._wake_approvals)
+        self._guards: dict[str, RunGuard] = {}
+        self._inject_started: set[str] = set()
 
     def start(self, scenario: Scenario) -> Incident:
         incident = self.store.add(Incident(scenario=scenario.name))
         self._approvals[incident.id] = threading.Event()
+        # Fixed here, so an engage that is released before the run's next checkpoint still aborts it.
+        self._guards[incident.id] = self.kill_switch.guard()
         return incident
+
+    def _wake_approvals(self):
+        for event in list(self._approvals.values()):
+            event.set()
 
     def answer_approval(self, incident_id: str, approved: bool) -> bool:
         incident = self.store.get(incident_id)
@@ -54,27 +66,54 @@ class Pipeline:
         return True
 
     def run(self, incident: Incident, scenario: Scenario) -> Incident:
+        guard = self._guards.pop(incident.id, None) or self.kill_switch.guard()
+        if hasattr(scenario, "abort_guard"):
+            scenario.abort_guard = guard
         try:
-            self._run(incident, scenario)
+            self._run(incident, scenario, guard)
+        except Aborted as abort:
+            if incident.state not in TERMINAL_STATES:
+                incident.abort(self._abort_note(incident, abort))
         except Exception as error:  # Never report success on an unexpected error.
             if incident.state not in TERMINAL_STATES:
                 incident.fail(f"{type(error).__name__}: {error}")
         finally:
-            try:
-                scenario.cleanup()
-                if incident.state is S.ESCALATED:
-                    incident.add_note(
-                        "Cleanup completed: injected fault reverted (revert not independently verified)"
-                    )
-            except Exception as error:
-                incident.add_note(f"Cleanup failed: {error}")
+            self._cleanup(incident, scenario)
         return incident
 
-    def _run(self, incident: Incident, scenario: Scenario):
+    @staticmethod
+    def _abort_note(incident: Incident, abort: Aborted) -> str:
+        note = f"Aborted by kill switch at {abort.where} (state {incident.state.value}): {abort.reason}"
+        if incident.remediation_result is not None:
+            note += (
+                f"; remediation already executed ({incident.remediation or 'no detail'}), "
+                "recovery NOT verified"
+            )
+        return note
+
+    def _cleanup(self, incident: Incident, scenario: Scenario):
+        injecting = incident.id in self._inject_started
+        self._inject_started.discard(incident.id)
+        if incident.state is S.ABORTED and not injecting:
+            incident.add_note("Nothing was injected; cleanup skipped")
+            return
+        try:
+            scenario.cleanup()
+            if incident.state in (S.ESCALATED, S.ABORTED):
+                incident.add_note(
+                    "Cleanup completed: injected fault reverted (revert not independently verified)"
+                )
+        except Exception as error:
+            incident.add_note(f"Cleanup failed: {error}")
+
+    def _run(self, incident: Incident, scenario: Scenario, guard: RunGuard):
         if not self.experiments_enabled():
             incident.fail("Experiments are disabled by the kill switch")
             return
 
+        guard.checkpoint("before inject")
+        # Flagged before the call so an inject that fails midway still gets cleanup.
+        self._inject_started.add(incident.id)
         incident.add_note(scenario.inject())
 
         detection = scenario.detect()
@@ -109,7 +148,9 @@ class Pipeline:
         if decision.decision is Decision.HUMAN_APPROVAL:
             incident.transition(S.AWAITING_APPROVAL, "; ".join(decision.reasons))
             incident.human_intervention = True
-            if not self._approvals[incident.id].wait(self.approval_timeout):
+            timed_out = not self._approvals[incident.id].wait(self.approval_timeout)
+            guard.checkpoint("approval wait")  # An engage beats a racing approve.
+            if timed_out:
                 incident.fail("Approval timed out")
                 return
             if not self._approved.get(incident.id):
@@ -117,6 +158,7 @@ class Pipeline:
                 return
             approved = True
 
+        guard.checkpoint("before remediation")
         incident.transition(S.REMEDIATING)
         try:
             result = self.remediation.execute(
@@ -131,6 +173,7 @@ class Pipeline:
             return
         incident.remediation = result.detail
 
+        guard.checkpoint("before verification")
         incident.transition(S.VERIFYING, incident.remediation)
         incident.verification = scenario.verify()
         if not incident.verification.passed:

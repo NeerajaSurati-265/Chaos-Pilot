@@ -68,7 +68,7 @@ SELECT SCENARIO → INJECT → DETECT (deterministic) → AI INVESTIGATOR (diagn
 
 `INJECTED → DETECTED → INVESTIGATING → POLICY_DECIDED → AWAITING_APPROVAL (if needed) → REMEDIATING → VERIFYING → RESOLVED`
 
-Any failure in remediation or verification → `FAILED` with evidence. DENY or human rejection → terminal, no remediation. `escalate_to_human` → policy decision `ESCALATE` → terminal `ESCALATED` (reached only from `POLICY_DECIDED`), no remediation or verification; the incident records a timeline entry and a log warning only, and the injected fault is reverted by cleanup.
+Any failure in remediation or verification → `FAILED` with evidence. A kill-switch engage aborts a running incident at the next checkpoint → terminal `ABORTED` (cleanup runs, never RESOLVED). DENY or human rejection → terminal, no remediation. `escalate_to_human` → policy decision `ESCALATE` → terminal `ESCALATED` (reached only from `POLICY_DECIDED`), no remediation or verification; the incident records a timeline entry and a log warning only, and the injected fault is reverted by cleanup.
 
 ### Resolution report must contain
 
@@ -135,7 +135,7 @@ git status && git diff --stat && git diff
 
 ## 7. Current status (1 Nov 2026)
 
-All 131 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
+All 173 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
 
 | Component | Status |
 |---|---|
@@ -147,7 +147,7 @@ All 131 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` w
 | Verification | Done, uses real AWS state |
 | Notification | Missing (destination is an open question in `decisions.txt`) |
 | Dashboard | Missing; API returns JSON only |
-| Kill switch | Partial: env var only, can't be flipped at runtime or abort a running experiment |
+| Kill switch | Done (in tests): in-memory runtime switch (`core/killswitch.py`) with `GET /kill-switch`, `POST /kill-switch/engage`, `POST /kill-switch/release`; blocks new starts, aborts a running incident at checkpoints, cleans up, ends `ABORTED`. Env gate unchanged. Endpoints unauthenticated; a restart releases it |
 | AWS timeouts / retries | Done: every boto3 client comes from `chaos_pilot/core/aws.py` (connect 5 s, read 15 s, standard retries, `max_attempts` 3) |
 | Cleanup / restore | Partial: only inside app process; no standalone scripts; revert not verified |
 | Real AWS runs | None recorded |
@@ -177,7 +177,7 @@ Plan: few, larger sessions run **sequentially** to save usage. One branch per se
 
 ### Session B: robustness (item 4 done; 5 and 6 still open)
 4. **Done:** shared boto3 client factory (`botocore.config.Config`: explicit connect/read timeouts, bounded retries); all clients use it.
-5. **Runtime kill switch** (endpoint + flag/`threading.Event`, no DB) checked before inject, before remediation, and inside every polling loop; aborts, cleans up, marks FAILED/ABORTED.
+5. **Done:** runtime kill switch (endpoints + `threading.Event`, no DB) checked before inject, before remediation, before verification, inside every polling loop and the approval wait; aborts, cleans up, ends `ABORTED`. Engage sticks for the run in flight; release does not resume.
 6. **Accurate report**: pre-injection state (or failed injection = FAILED), injected-fault field, cleanup-result field.
 
 ### Session C: dashboard

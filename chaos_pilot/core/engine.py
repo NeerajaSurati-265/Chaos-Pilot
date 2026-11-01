@@ -1,6 +1,7 @@
 import os
 import threading
 
+from chaos_pilot.core.killswitch import KillSwitch
 from chaos_pilot.core.pipeline import Pipeline
 from chaos_pilot.experiments.task_failure import (
     ExperimentNotAllowed,
@@ -66,8 +67,10 @@ class ChaosEngine:
                 allowed_actions=DEFAULT_RULES,
             ),
             experiments_enabled=experiments_enabled,
+            kill_switch=KillSwitch(),
         )
         self.store = self.pipeline.store
+        self.kill_switch = self.pipeline.kill_switch
         self.scenario_factories = scenario_factories or {
             "bad-deployment": self._bad_deployment,
             "config-change": self._config_change,
@@ -102,11 +105,19 @@ class ChaosEngine:
             alb_security_group_id=self.alb_security_group_id,
         )
 
+    def _refuse_if_engaged(self):
+        if self.kill_switch.engaged:
+            raise ExperimentNotAllowed(
+                f"Kill switch engaged: {self.kill_switch.reason}. "
+                "Release it at POST /kill-switch/release to start experiments."
+            )
+
     def get_status(self):
         return {
             "platform": "Chaos-Pilot",
             "status": "busy" if self._running.locked() else "ready",
             "experiments_enabled": experiments_enabled(),
+            "kill_switch_engaged": self.kill_switch.engaged,
             "scenarios": sorted(self.scenario_factories),
             "message": "Chaos engine is ready"
         }
@@ -118,6 +129,7 @@ class ChaosEngine:
                 "Set CHAOS_PILOT_EXPERIMENTS_ENABLED=true to allow them."
             )
 
+        self._refuse_if_engaged()
         return self.task_failure.stop_task(task_id)
 
     def start_scenario(self, name: str, background: bool = True) -> Incident:
@@ -126,6 +138,7 @@ class ChaosEngine:
                 "Experiments are disabled. "
                 "Set CHAOS_PILOT_EXPERIMENTS_ENABLED=true to allow them."
             )
+        self._refuse_if_engaged()
         factory = self.scenario_factories.get(name)
         if factory is None:
             raise ExperimentNotAllowed(f"Unknown scenario '{name}'")

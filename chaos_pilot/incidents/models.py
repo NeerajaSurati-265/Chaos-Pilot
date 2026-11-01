@@ -20,6 +20,7 @@ class IncidentState(str, Enum):
     RESOLVED = "RESOLVED"
     REJECTED = "REJECTED"
     ESCALATED = "ESCALATED"
+    ABORTED = "ABORTED"
     FAILED = "FAILED"
 
 
@@ -27,6 +28,7 @@ TERMINAL_STATES = {
     IncidentState.RESOLVED,
     IncidentState.REJECTED,
     IncidentState.ESCALATED,
+    IncidentState.ABORTED,
     IncidentState.FAILED,
 }
 
@@ -121,6 +123,7 @@ class Incident:
     verification: VerificationResult | None = None
     human_intervention: bool = False
     failure_reason: str | None = None
+    abort_reason: str | None = None
     timeline: list[TimelineEvent] = field(default_factory=list)
 
     def __post_init__(self):
@@ -151,6 +154,15 @@ class Incident:
         self.failure_reason = reason
         self.state = IncidentState.FAILED
         self.timeline.append(TimelineEvent(IncidentState.FAILED, utc_now(), reason))
+
+    def abort(self, reason: str):
+        # An operator stop (kill switch), not a malfunction: kept apart from FAILED.
+        if self.state in TERMINAL_STATES:
+            raise InvalidTransition(f"{self.id} is already {self.state.value}")
+
+        self.abort_reason = reason
+        self.state = IncidentState.ABORTED
+        self.timeline.append(TimelineEvent(IncidentState.ABORTED, utc_now(), reason))
 
     @property
     def recovery_seconds(self) -> float | None:
@@ -195,6 +207,7 @@ class Incident:
             "recovery_seconds": self.recovery_seconds,
             "human_intervention": self.human_intervention,
             "failure_reason": self.failure_reason,
+            "abort_reason": self.abort_reason,
             "timeline": [
                 {"state": e.state.value, "at": e.at.isoformat(), "note": e.note}
                 for e in self.timeline

@@ -30,6 +30,25 @@ def status(engine: ChaosEngine = Depends(get_engine)):
     return engine.get_status()
 
 
+@app.get("/kill-switch")
+def kill_switch_status(engine: ChaosEngine = Depends(get_engine)):
+    return engine.kill_switch.status()
+
+
+@app.post("/kill-switch/engage")
+def engage_kill_switch(
+    reason: str = "engaged via API", engine: ChaosEngine = Depends(get_engine)
+):
+    engine.kill_switch.engage(reason)
+    return engine.kill_switch.status()
+
+
+@app.post("/kill-switch/release")
+def release_kill_switch(engine: ChaosEngine = Depends(get_engine)):
+    engine.kill_switch.release()
+    return engine.kill_switch.status()
+
+
 @app.post("/experiments/task-failure")
 def task_failure(task_id: str, engine: ChaosEngine = Depends(get_engine)):
     try:

@@ -50,6 +50,8 @@ class ConfigChangeScenario:
         self.poll_interval = poll_interval
         self.sleep = sleep
         self.clock = clock
+        # Set by Pipeline.run; when set, polling aborts on the kill switch.
+        self.abort_guard = None
         self.rule_removed = False
         # Captured from AWS just before the rule is removed, so the restore is exact.
         self.known_good_rule_captured = False
@@ -98,11 +100,16 @@ class ConfigChangeScenario:
     def _poll(self, check: Callable[[], bool], timeout: float) -> bool:
         deadline = self.clock() + timeout
         while True:
+            if self.abort_guard is not None:
+                self.abort_guard.checkpoint("polling loop")
             if check():
                 return True
             if self.clock() >= deadline:
                 return False
-            self.sleep(self.poll_interval)
+            if self.abort_guard is not None:
+                self.abort_guard.pause(self.poll_interval, "polling loop")
+            else:
+                self.sleep(self.poll_interval)
 
     def _restore_rule(self):
         restore_ingress_rule(

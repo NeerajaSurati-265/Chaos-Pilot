@@ -47,6 +47,8 @@ class BadDeploymentScenario:
         self.poll_interval = poll_interval
         self.sleep = sleep
         self.clock = clock
+        # Set by Pipeline.run; when set, polling aborts on the kill switch.
+        self.abort_guard = None
         self.known_good_task_definition: str | None = None
         self.bad_task_definition: str | None = None
         self.known_good_was_healthy = False
@@ -75,11 +77,16 @@ class BadDeploymentScenario:
     def _poll(self, check: Callable[[], bool], timeout: float) -> bool:
         deadline = self.clock() + timeout
         while True:
+            if self.abort_guard is not None:
+                self.abort_guard.checkpoint("polling loop")
             if check():
                 return True
             if self.clock() >= deadline:
                 return False
-            self.sleep(self.poll_interval)
+            if self.abort_guard is not None:
+                self.abort_guard.pause(self.poll_interval, "polling loop")
+            else:
+                self.sleep(self.poll_interval)
 
     # --- scenario steps ----------------------------------------------------
 
