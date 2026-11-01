@@ -35,7 +35,7 @@ Tests: **247 passing** (mocked AWS only).
   description preserved on restore.
 - Removed dead allow-list entries `restore_known_good_config` and `restore_dependency` (`69e6fcd`).
 
-## Done, not yet committed
+## Shared AWS client factory and Config Change revoke fix (committed: `f989e3d`, `d304173`)
 
 - Shared boto3 client factory (`chaos_pilot/core/aws.py`): connect 5 s, read 15 s, standard
   retries, `max_attempts` 3. All 8 app clients use it.
@@ -45,7 +45,7 @@ Tests: **247 passing** (mocked AWS only).
   experiments/task_failure.py, remediation/executors.py, tests/test_aws_client.py (new),
   tests/test_config_change.py, decisions.txt, projectcontext.md, progress.md.
 
-## Runtime kill switch (done, not yet committed)
+## Runtime kill switch (committed: `a39d853`)
 
 - `chaos_pilot/core/killswitch.py` (new): in-memory switch, `GET /kill-switch`,
   `POST /kill-switch/engage`, `POST /kill-switch/release`; blocks new starts with 403.
@@ -56,7 +56,7 @@ Tests: **247 passing** (mocked AWS only).
 - Files: core/killswitch.py, tests/test_kill_switch.py (new); core/pipeline.py, core/engine.py,
   incidents/models.py, app/main.py, scenarios/bad_deployment.py, scenarios/config_change.py.
 
-## Accurate report and verified cleanup (done, not yet committed)
+## Accurate report and verified cleanup (committed; last touched by `24d7a6f`)
 
 - New `PENDING` initial state; an incident enters `INJECTED` only after `inject()` succeeds. A failed
   injection ends `FAILED` and never shows `INJECTED`.
@@ -72,25 +72,30 @@ Tests: **247 passing** (mocked AWS only).
   test_incident_lifecycle.py.
 - Not implemented: refuse new starts while the last cleanup is unverified.
 
-## Dashboard v2, part C1 (done, not yet committed)
+## Dashboard v2, part C1 (committed: `1e2854b`)
 
 - Replaced the simple UI: sidebar, KPIs, hero + scenario picker, recent incidents, scenarios band,
   incident page with flowchart / AI vs policy panels / approval card / verification / timeline,
   report card with .md, .json, print-PDF and link, `/reports/{id}` page, reports table.
 - New read-only endpoints: `/api/config`, `/api/scenarios`, `/api/reports/{id}.md|.json`,
   `/reports/{id}`; `/incidents` now adds derived fields (outcome, stage_seconds, approval deadline).
-- Not built: `/api/analytics` + Analytics page, demo mode (C2). Not verified in a real browser.
+- Kill switch: compact Engage (reason required) / Release (confirm) in the sidebar, existing
+  endpoints only; the experiments pill is display-only.
+- Approval countdown: `approval_deadline` / `approval_seconds_remaining` are computed on the
+  server (timeline entry + `Pipeline.approval_timeout`); the page only counts down from them.
+- Fixed: scenario labels now normalise `bad_deployment` / `bad-deployment` (v1 showed raw names).
+- Chart.js 4.4.1 and Google Fonts load from CDNs (fallback fonts, "Charts are unavailable" note,
+  no SRI hash). KPIs and the recovery chart are computed in the browser from `/incidents`;
+  trend arrows need 4+ finished runs.
+- Not built: `/api/analytics` + Analytics page (the nav item shows a placeholder), demo mode
+  (C2). Not verified in a real browser. The commit message for `1e2854b` mentions analytics,
+  but only the placeholder exists.
 
-## Dashboard v1 notes (superseded UI, same mechanics)
+## Dashboard v1 notes (UI replaced by v2; these two points still apply)
 
-- `app/static/{index.html,app.js,style.css}`; `GET /` serves it, `/static` mounts the files.
-  Polls the existing JSON API; no new data endpoints. `Incident.report()` gained `explanation`.
-- Shows env gate, kill switch (Engage asks a reason, Release asks confirmation), scenario
-  picker/Start with the API's refusal message, lifecycle, timeline, AI diagnosis (advisory)
-  apart from the policy decision, Approve/Reject while AWAITING_APPROVAL, final report, history.
-- Unauthenticated: run on 127.0.0.1 only.
-- Not verified: behaviour in a real browser (no browser automation; tests only check served
-  files and that app.js avoids HTML injection APIs).
+- `Incident.report()` gained `explanation` (the AI panel needs it).
+- Dashboard and kill-switch endpoints are unauthenticated: run uvicorn on 127.0.0.1 only, never
+  `--host 0.0.0.0`.
 
 ## Scenarios
 
@@ -102,6 +107,11 @@ Tests: **247 passing** (mocked AWS only).
 ## Next / known gaps
 
 - NOTIFY step.
+- Dashboard C2: `GET /api/analytics` + Analytics page (MTTR trend, outcome donut, stage timing,
+  AUTO vs HUMAN_APPROVAL, AI accuracy with a separate `escalate_to_human` bucket), and opt-in demo
+  mode (`CHAOS_PILOT_DEMO_DATA`, separate store, no real scenarios or boto3 clients).
+- 7a: refuse new starts while the last cleanup is unverified (needs an explicit acknowledge).
+- Dashboard JS has never run in a browser or under a test.
 - Escalation hand-off: ESCALATED only logs and records a timeline entry.
 - LLM investigator tested with a stubbed client only; not run against the real API.
 - `allowed_actions` is built from `DEFAULT_RULES`, not the policy instance's rules.
