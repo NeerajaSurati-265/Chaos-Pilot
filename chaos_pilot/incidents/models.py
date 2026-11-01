@@ -232,6 +232,7 @@ class Incident:
             ],
             "likely_cause": self.diagnosis.likely_cause if self.diagnosis else None,
             "confidence": self.diagnosis.confidence if self.diagnosis else None,
+            "explanation": self.diagnosis.explanation if self.diagnosis else None,
             "recommended_action": (
                 self.diagnosis.recommended_action if self.diagnosis else None
             ),

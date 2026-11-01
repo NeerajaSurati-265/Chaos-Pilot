@@ -1,7 +1,7 @@
 # Chaos-Pilot: Progress
 
 Last updated: 2026-11-01. Sources: `decisions.txt`, `projectcontext.md`, git history.
-Tests: **205 passing** (mocked AWS only).
+Tests: **247 passing** (mocked AWS only).
 
 ## Workflow status
 
@@ -17,7 +17,7 @@ Tests: **205 passing** (mocked AWS only).
 | Remediation engine | Done: executors, preconditions, structured SUCCEEDED/FAILED results |
 | Verify | Done: real recovery signals, not API success |
 | Notify | **Not built** |
-| Dashboard | **Not built** |
+| Dashboard | C1 done (layout, scenarios, incident detail, reports); C2 (analytics, demo mode) not built; JS not executed by any test |
 
 ## Done and committed
 
@@ -72,6 +72,26 @@ Tests: **205 passing** (mocked AWS only).
   test_incident_lifecycle.py.
 - Not implemented: refuse new starts while the last cleanup is unverified.
 
+## Dashboard v2, part C1 (done, not yet committed)
+
+- Replaced the simple UI: sidebar, KPIs, hero + scenario picker, recent incidents, scenarios band,
+  incident page with flowchart / AI vs policy panels / approval card / verification / timeline,
+  report card with .md, .json, print-PDF and link, `/reports/{id}` page, reports table.
+- New read-only endpoints: `/api/config`, `/api/scenarios`, `/api/reports/{id}.md|.json`,
+  `/reports/{id}`; `/incidents` now adds derived fields (outcome, stage_seconds, approval deadline).
+- Not built: `/api/analytics` + Analytics page, demo mode (C2). Not verified in a real browser.
+
+## Dashboard v1 notes (superseded UI, same mechanics)
+
+- `app/static/{index.html,app.js,style.css}`; `GET /` serves it, `/static` mounts the files.
+  Polls the existing JSON API; no new data endpoints. `Incident.report()` gained `explanation`.
+- Shows env gate, kill switch (Engage asks a reason, Release asks confirmation), scenario
+  picker/Start with the API's refusal message, lifecycle, timeline, AI diagnosis (advisory)
+  apart from the policy decision, Approve/Reject while AWAITING_APPROVAL, final report, history.
+- Unauthenticated: run on 127.0.0.1 only.
+- Not verified: behaviour in a real browser (no browser automation; tests only check served
+  files and that app.js avoids HTML injection APIs).
+
 ## Scenarios
 
 - Bad Deployment: done
@@ -81,7 +101,7 @@ Tests: **205 passing** (mocked AWS only).
 
 ## Next / known gaps
 
-- NOTIFY step and dashboard.
+- NOTIFY step.
 - Escalation hand-off: ESCALATED only logs and records a timeline entry.
 - LLM investigator tested with a stubbed client only; not run against the real API.
 - `allowed_actions` is built from `DEFAULT_RULES`, not the policy instance's rules.

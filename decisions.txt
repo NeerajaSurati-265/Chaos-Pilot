@@ -47,6 +47,77 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-11-01 | uncommitted | Dashboard v2, part C1 (layout, scenarios, incident detail, reports)
+  What:  Replaces the first simple dashboard UI (the entry below describes its mechanics, which
+         still hold: static files, polling, textContent only). New files: app/static/index.html,
+         report.html, css/{tokens,app,print}.css, js/ (ES modules, no build step; dom.js is the
+         only DOM builder), app/incident_view.py, app/catalog.py, app/reports.py.
+         Views are hash routes (#/, #/incidents, #/incident/<id>, #/scenarios, #/reports,
+         #/approvals, #/analytics) because GET /incidents is the JSON API. Polling: 2.5 s while an
+         incident is running or awaiting approval, 8 s otherwise, paused when the tab is hidden.
+         Incident page: 8-node flowchart (Break, Notice, Investigate, Decide, [Ask a human], Fix,
+         Double-check, Report) lit from the real timeline, Simple/Engineer toggle, AI panel
+         (advice only) beside the policy panel (deterministic) with a callout when policy denied
+         or did not auto-run the AI's action, approval card with confirm steps, verification
+         checklist, timeline with elapsed times, report card with .md / .json / print-PDF /
+         copy link / navigator.share. /reports/{id} is a standalone read-only page.
+  API:   Added (all read-only): GET /api/config, GET /api/scenarios, GET /api/reports/{id}.md,
+         GET /api/reports/{id}.json, GET /reports/{id} (HTML shell). GET /incidents and
+         GET /incidents/{id} now return report() plus derived fields built in app/incident_view.py
+         (outcome, stage_seconds, stopped_at, policy_action, policy_denied_ai_action,
+         approval_timeout_seconds, approval_deadline, approval_seconds_remaining). Existing keys
+         are unchanged. models.py, pipeline, policy, remediation, scenarios and investigators are
+         not touched; no AWS call was added.
+  Why:   approval_deadline / approval_seconds_remaining are computed on the server from the
+         AWAITING_APPROVAL timeline entry plus Pipeline.approval_timeout (no pipeline change);
+         the page only counts down from the server's value. Outcome DENIED (policy DENY) is kept
+         apart from REJECTED (a human said no). The scenario's default policy is derived from
+         SCENARIO_ACTIONS and DEFAULT_RULES, not hardcoded. Dependency / Cascading Failure cards
+         are shown as "Coming soon", disabled, with no stats. Stage durations are derived once,
+         server-side, so the analytics session can reuse them.
+         Kill switch: compact Engage (reason required) / Release (confirm) in the sidebar, using
+         the existing endpoints only; the experiments pill is display-only.
+         Workload card: cluster/service from config, region from AWS_REGION / AWS_DEFAULT_REGION
+         or "not set", dot = Chaos-Pilot state (idle / running / API unreachable), not live ECS.
+         Chart.js 4.4.1 (jsdelivr) and Google Fonts load from CDNs with fallback fonts and a
+         visible "Charts are unavailable" note; no SRI hash (could not be verified offline).
+         Scenario labels now normalise bad_deployment / bad-deployment (the first dashboard
+         showed raw names).
+  Not built (C2): GET /api/analytics and the Analytics page (placeholder says so), demo mode
+         (CHAOS_PILOT_DEMO_DATA). KPI tiles and the recovery chart are computed in the browser
+         from /incidents until then. Trend arrows need 4+ finished runs.
+  Tests: test_incident_view.py (stage durations, stopped_at, outcome, approval deadline),
+         test_reports.py (markdown), test_dashboard_api.py (new endpoints, derived fields,
+         downloads, 404s), test_dashboard.py rewritten for the new page. The JS is not executed
+         by any test; no browser check was done.
+
+2026-11-01 | uncommitted | Dashboard (Session C item 7)
+  What:  Static page served by FastAPI: app/static/index.html, app.js, style.css; GET / serves
+         the page (hidden from OpenAPI), /static is a StaticFiles mount. Vanilla JS, no framework,
+         no build step, no websockets. Polls /status and /kill-switch (3 s), /incidents (5 s) and
+         the selected incident (1.5 s, stops once it is terminal and cleanup is recorded).
+         No new data endpoints: GET /incidents already lists incidents (oldest first; the UI
+         reverses it). The only API change is one additive key, "explanation", in
+         Incident.report() (models.py); it was not exposed before and the AI panel needs it.
+         The raw task-failure endpoint is not in the UI.
+  Why:   Text from the API (timeline notes, AI explanation, reasons) is rendered only with
+         textContent through one el() helper; a test fails if app.js uses innerHTML,
+         insertAdjacentHTML, document.write or eval.
+         Disabling Start/Approve/Release in the page is a convenience only; the server still
+         refuses (403/409) and the UI shows the API's message.
+         Engage is enabled whenever the switch is released (also while an experiment runs) and
+         requires a reason; Release asks for confirmation.
+         AI diagnosis and policy decision are separate panels; the AI panel is labelled advisory.
+         Terminal states have distinct colour and text. A cleanup that is attempted but not
+         verified (or failed) shows a warning banner and a marker in the history list; it never
+         changes the shown state.
+  Safety: dashboard and kill-switch endpoints are unauthenticated. Run uvicorn on the default
+         host (127.0.0.1) only; never --host 0.0.0.0.
+  Tests: tests/test_dashboard.py (10): page and static files served, no HTML-injection APIs in
+         app.js, endpoints referenced, release confirmation / engage reason present, all five
+         terminal states handled, report explanation, kill switch flow. No browser test: the
+         JS itself is not executed by any test.
+
 2026-11-01 | uncommitted | ConfigChange cleanup restores only a rule it removed
   What:  ConfigChangeScenario.cleanup() used to re-add the rule whenever it was absent, so an
          inject() that refused because the rule was already missing (unknown start state) was
@@ -533,7 +604,6 @@ Format: date | commit | component
   - core/engine.py builds allowed_actions from DEFAULT_RULES rather than the policy engine's
     own rules. A PolicyEngine with custom rules would not change what the remediation engine
     allows.
-  - Dashboard not built.
   - After RestoreSecurityGroupRule runs, ConfigChangeScenario.rule_removed is still True, so
     cleanup() calls authorize_security_group_ingress once more and gets
     InvalidPermission.Duplicate, which is tolerated. Harmless, one extra AWS call.

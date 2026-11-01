@@ -1,0 +1,9 @@
+@media print {
+  body { background: #fff; }
+  .sidebar, .topbar, .no-print, .demo-banner, .crumbs { display: none !important; }
+  .shell { display: block; padding: 0; }
+  .main-card { box-shadow: none; border-radius: 0; padding: 0; }
+  .card { box-shadow: none; break-inside: avoid; }
+  /* "Print / PDF" marks the body so only the report card prints from the incident page. */
+  body.print-report #view > *:not(#report-section) { display: none !important; }
+}
