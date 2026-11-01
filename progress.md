@@ -1,7 +1,7 @@
 # Chaos-Pilot: Progress
 
 Last updated: 2026-11-01. Sources: `decisions.txt`, `projectcontext.md`, git history.
-Tests: **173 passing** (mocked AWS only).
+Tests: **205 passing** (mocked AWS only).
 
 ## Workflow status
 
@@ -55,6 +55,22 @@ Tests: **173 passing** (mocked AWS only).
 - Endpoints are unauthenticated and a restart releases the switch (local MVP only).
 - Files: core/killswitch.py, tests/test_kill_switch.py (new); core/pipeline.py, core/engine.py,
   incidents/models.py, app/main.py, scenarios/bad_deployment.py, scenarios/config_change.py.
+
+## Accurate report and verified cleanup (done, not yet committed)
+
+- New `PENDING` initial state; an incident enters `INJECTED` only after `inject()` succeeds. A failed
+  injection ends `FAILED` and never shows `INJECTED`.
+- `inject()` returns `Injection(summary, injected_fault)`; scenarios expose `pre_injection_state()`.
+  Both go into the report with no new AWS calls.
+- Structured `cleanup` result in the report (replaces the free-text notes; a timeline entry is kept).
+  New read-only `verify_cleanup()` per scenario (bounded retry, 30 s / 5 s). A failed check never
+  changes the terminal state. Bad Deployment checks the revision only.
+- `detect_seconds` added; `recovery_seconds` now ends at the RESOLVED entry (cleanup entries added
+  after RESOLVED no longer move it).
+- Files: models.py, core/pipeline.py, scenarios/base.py, bad_deployment.py, config_change.py,
+  tests/test_report_accuracy.py (new); tests updated: test_pipeline.py, test_kill_switch.py,
+  test_incident_lifecycle.py.
+- Not implemented: refuse new starts while the last cleanup is unverified.
 
 ## Scenarios
 

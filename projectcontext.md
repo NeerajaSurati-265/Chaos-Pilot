@@ -66,13 +66,13 @@ SELECT SCENARIO → INJECT → DETECT (deterministic) → AI INVESTIGATOR (diagn
 
 ### Incident lifecycle
 
-`INJECTED → DETECTED → INVESTIGATING → POLICY_DECIDED → AWAITING_APPROVAL (if needed) → REMEDIATING → VERIFYING → RESOLVED`
+`PENDING → INJECTED → DETECTED → INVESTIGATING → POLICY_DECIDED → AWAITING_APPROVAL (if needed) → REMEDIATING → VERIFYING → RESOLVED`
 
-Any failure in remediation or verification → `FAILED` with evidence. A kill-switch engage aborts a running incident at the next checkpoint → terminal `ABORTED` (cleanup runs, never RESOLVED). DENY or human rejection → terminal, no remediation. `escalate_to_human` → policy decision `ESCALATE` → terminal `ESCALATED` (reached only from `POLICY_DECIDED`), no remediation or verification; the incident records a timeline entry and a log warning only, and the injected fault is reverted by cleanup.
+Any failure in remediation or verification → `FAILED` with evidence. `PENDING` is the state before injection; the incident enters `INJECTED` only after `inject()` succeeds, and a failed injection ends `FAILED` (never `INJECTED`) with the captured pre-injection state as evidence. A kill-switch engage aborts a running incident at the next checkpoint → terminal `ABORTED` (cleanup runs, never RESOLVED). DENY or human rejection → terminal, no remediation. `escalate_to_human` → policy decision `ESCALATE` → terminal `ESCALATED` (reached only from `POLICY_DECIDED`), no remediation or verification; the incident records a timeline entry and a log warning only, and the injected fault is reverted by cleanup.
 
 ### Resolution report must contain
 
-Incident ID, scenario, detected signals, likely cause, confidence, recommended action, policy decision + reason, executed remediation, verification checks + results, recovery duration, whether human intervention was required. (Planned additions: injected fault details, cleanup result.)
+Incident ID, scenario, detected signals, likely cause, confidence, recommended action, policy decision + reason, executed remediation, verification checks + results, recovery duration, whether human intervention was required. The report also carries `pre_injection_state`, `injected_fault`, `cleanup` (`attempted`, `skipped_reason`, `succeeded`, `error`, `verified`, `verification_detail`), `abort_reason` and `detect_seconds`. `detect_seconds` = `INJECTED` entry → `DETECTED` entry (None if never detected). `recovery_seconds` = `DETECTED` entry → `RESOLVED` entry (excludes time before detection, includes any approval wait; None unless RESOLVED). A failed cleanup verification is recorded in `cleanup` and never changes the terminal state.
 
 ---
 
@@ -135,7 +135,7 @@ git status && git diff --stat && git diff
 
 ## 7. Current status (1 Nov 2026)
 
-All 173 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
+All 205 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
 
 | Component | Status |
 |---|---|
@@ -149,7 +149,7 @@ All 173 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` w
 | Dashboard | Missing; API returns JSON only |
 | Kill switch | Done (in tests): in-memory runtime switch (`core/killswitch.py`) with `GET /kill-switch`, `POST /kill-switch/engage`, `POST /kill-switch/release`; blocks new starts, aborts a running incident at checkpoints, cleans up, ends `ABORTED`. Env gate unchanged. Endpoints unauthenticated; a restart releases it |
 | AWS timeouts / retries | Done: every boto3 client comes from `chaos_pilot/core/aws.py` (connect 5 s, read 15 s, standard retries, `max_attempts` 3) |
-| Cleanup / restore | Partial: only inside app process; no standalone scripts; revert not verified |
+| Cleanup / restore | Partial: runs only inside the app process (no standalone scripts). Result is a structured report field and the revert is read back afterwards (read-only describe, bounded retry); Bad Deployment checks the service revision only, not rollout completion or deregistration |
 | Real AWS runs | None recorded |
 
 ### Change made after the audit (committed in `a62fd92`)
@@ -159,10 +159,10 @@ All 173 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` w
 ### Known weaknesses
 
 1. ~~**Policy doesn't check that the AI's action fits the incident type.**~~ **Fixed:** `SCENARIO_ACTIONS` in `policy/engine.py` maps each scenario to its permitted action; a mismatch is DENY.
-2. After REJECTED / FAILED, cleanup silently reverts the fault and **nothing verifies the revert worked**.
+2. ~~After REJECTED / FAILED, cleanup silently reverts the fault and nothing verifies the revert worked.~~ **Fixed:** `verify_cleanup()` reads the state back and the result is in the report. Remaining gap: nothing stops a new start while the last cleanup is unverified (see roadmap 7a).
 3. **No IAM role for Chaos-Pilot itself**; app runs with local credentials. Code needs: `ecs:UpdateService`, `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `ec2:AuthorizeSecurityGroupIngress`, `ec2:DescribeSecurityGroups` (plus whatever injectors use).
 4. ~~**No explicit boto3 timeouts/retries** (60 s defaults).~~ **Fixed:** one factory, `chaos_pilot/core/aws.py`. Polling loops keep their own deadlines; the last check can overrun a deadline by one check's worst-case AWS calls.
-5. Incident enters `INJECTED` **before** injection runs; injected fault and cleanup result have no report fields.
+5. ~~Incident enters `INJECTED` before injection runs; injected fault and cleanup result have no report fields.~~ **Fixed:** `PENDING` until `inject()` succeeds; `injected_fault`, `pre_injection_state` and `cleanup` are in the report.
 
 ---
 
@@ -178,10 +178,12 @@ Plan: few, larger sessions run **sequentially** to save usage. One branch per se
 ### Session B: robustness (item 4 done; 5 and 6 still open)
 4. **Done:** shared boto3 client factory (`botocore.config.Config`: explicit connect/read timeouts, bounded retries); all clients use it.
 5. **Done:** runtime kill switch (endpoints + `threading.Event`, no DB) checked before inject, before remediation, before verification, inside every polling loop and the approval wait; aborts, cleans up, ends `ABORTED`. Engage sticks for the run in flight; release does not resume.
-6. **Accurate report**: pre-injection state (or failed injection = FAILED), injected-fault field, cleanup-result field.
+6. **Done:** accurate report: `PENDING` until injection succeeds (failed injection = `FAILED`), `pre_injection_state`, `injected_fault`, structured `cleanup` result with a read-only revert check, `detect_seconds`.
 
 ### Session C: dashboard
 7. Simple UI on the existing JSON API (no heavy framework unless already used): pick + trigger scenario, live lifecycle/timeline, **AI diagnosis shown separately from policy decision**, approve/reject buttons, final report with recovery duration and verification result, FAILED shown honestly.
+
+7a. **Not implemented:** refuse new starts while the last incident's cleanup is unverified (`cleanup.verified == false`); needs an explicit acknowledge to clear.
 
 ### Manual (owner, no agent)
 8. Run Bad Deployment and Config Change **against real AWS**, one at a time, record results (recovery time per scenario). Fix the testapp image / `/health` caveat first.

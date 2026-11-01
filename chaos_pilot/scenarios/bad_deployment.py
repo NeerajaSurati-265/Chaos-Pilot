@@ -4,7 +4,7 @@ from typing import Callable
 from chaos_pilot.core.aws import make_client
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
 from chaos_pilot.remediation.engine import RemediationContext
-from chaos_pilot.scenarios.base import Detection
+from chaos_pilot.scenarios.base import Detection, Injection
 
 BAD_REVISION_ENV = {"name": "HEALTHY", "value": "false"}
 
@@ -34,6 +34,8 @@ class BadDeploymentScenario:
         detect_timeout: float = 600,
         verify_timeout: float = 600,
         poll_interval: float = 15,
+        cleanup_verify_timeout: float = 30,
+        cleanup_verify_interval: float = 5,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -45,6 +47,8 @@ class BadDeploymentScenario:
         self.detect_timeout = detect_timeout
         self.verify_timeout = verify_timeout
         self.poll_interval = poll_interval
+        self.cleanup_verify_timeout = cleanup_verify_timeout
+        self.cleanup_verify_interval = cleanup_verify_interval
         self.sleep = sleep
         self.clock = clock
         # Set by Pipeline.run; when set, polling aborts on the kill switch.
@@ -90,7 +94,17 @@ class BadDeploymentScenario:
 
     # --- scenario steps ----------------------------------------------------
 
-    def inject(self) -> str:
+    def pre_injection_state(self) -> dict:
+        if self.known_good_task_definition is None:
+            return {}
+        return {
+            "cluster": self.cluster,
+            "service": self.service,
+            "task_definition": self.known_good_task_definition,
+            "known_good_was_healthy": self.known_good_was_healthy,
+        }
+
+    def inject(self) -> Injection:
         service = self._service()
         self.known_good_task_definition = service["taskDefinition"]
         primary = self._primary_deployment(service)
@@ -116,7 +130,14 @@ class BadDeploymentScenario:
             service=self.service,
             taskDefinition=self.bad_task_definition,
         )
-        return f"Deployed unhealthy revision {self.bad_task_definition}"
+        return Injection(
+            f"Deployed unhealthy revision {self.bad_task_definition}",
+            {
+                "type": "unhealthy_task_definition_revision",
+                "task_definition": self.bad_task_definition,
+                "env": {BAD_REVISION_ENV["name"]: BAD_REVISION_ENV["value"]},
+            },
+        )
 
     def _signals(self) -> list[Signal]:
         service = self._service()
@@ -215,3 +236,31 @@ class BadDeploymentScenario:
                 )
         if self.bad_task_definition:
             self.ecs.deregister_task_definition(taskDefinition=self.bad_task_definition)
+
+    def verify_cleanup(self) -> CheckResult:
+        # Read-only. Proves the service is configured for the known-good revision; it does
+        # not wait for the rollout to finish or check that the bad revision was deregistered.
+        if self.known_good_task_definition is None:
+            return CheckResult("cleanup_reverted", True, "nothing was captured, nothing changed")
+
+        def check() -> CheckResult:
+            service = self._service()
+            rollout = next(
+                (d.get("rolloutState") for d in service.get("deployments", [])
+                 if d.get("status") == "PRIMARY"),
+                None,
+            )
+            current = service["taskDefinition"]
+            return CheckResult(
+                "cleanup_reverted",
+                current == self.known_good_task_definition,
+                f"service on {current} (known-good {self.known_good_task_definition}), "
+                f"rollout {rollout}",
+            )
+
+        deadline = self.clock() + self.cleanup_verify_timeout
+        while True:
+            result = check()
+            if result.passed or self.clock() >= deadline:
+                return result
+            self.sleep(self.cleanup_verify_interval)

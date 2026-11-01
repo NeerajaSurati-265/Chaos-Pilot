@@ -7,7 +7,7 @@ from chaos_pilot.core.aws import make_client
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
 from chaos_pilot.remediation.engine import RemediationContext
 from chaos_pilot.remediation.executors import ingress_permission, restore_ingress_rule
-from chaos_pilot.scenarios.base import Detection
+from chaos_pilot.scenarios.base import Detection, Injection
 
 
 class ConfigChangeScenario:
@@ -33,6 +33,8 @@ class ConfigChangeScenario:
         detect_timeout: float = 600,
         verify_timeout: float = 600,
         poll_interval: float = 15,
+        cleanup_verify_timeout: float = 30,
+        cleanup_verify_interval: float = 5,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -48,6 +50,8 @@ class ConfigChangeScenario:
         self.detect_timeout = detect_timeout
         self.verify_timeout = verify_timeout
         self.poll_interval = poll_interval
+        self.cleanup_verify_timeout = cleanup_verify_timeout
+        self.cleanup_verify_interval = cleanup_verify_interval
         self.sleep = sleep
         self.clock = clock
         # Set by Pipeline.run; when set, polling aborts on the kill switch.
@@ -123,7 +127,20 @@ class ConfigChangeScenario:
 
     # --- scenario steps ----------------------------------------------------
 
-    def inject(self) -> str:
+    def _rule_identity(self) -> dict:
+        return {
+            "security_group_id": self.ecs_security_group_id,
+            "protocol": "tcp",
+            "port": self.port,
+            "source_security_group_id": self.alb_security_group_id,
+        }
+
+    def pre_injection_state(self) -> dict:
+        if not self.known_good_rule_captured:
+            return {}
+        return {**self._rule_identity(), "description": self.rule_description}
+
+    def inject(self) -> Injection:
         known_good = self._find_rule()
         if known_good is None:
             raise RuntimeError(
@@ -145,9 +162,10 @@ class ConfigChangeScenario:
             if self._rule_present():
                 raise
         self.rule_removed = True
-        return (
+        return Injection(
             f"Removed tcp/{self.port} from {self.alb_security_group_id} "
-            f"on {self.ecs_security_group_id}"
+            f"on {self.ecs_security_group_id}",
+            {"type": "security_group_rule_removed", **self._rule_identity()},
         )
 
     def detect(self) -> Detection:
@@ -204,7 +222,31 @@ class ConfigChangeScenario:
         self._poll(recovered, self.verify_timeout)
         return VerificationResult(checks=checks)
 
-    def cleanup(self) -> None:
+    def cleanup(self) -> str | None:
+        # Only restore a rule that was confirmed present before injection; otherwise this
+        # would add a rule the scenario never removed. Returns the reason if skipped.
+        if not self.known_good_rule_captured:
+            return "rule was not present before injection"
         # Never leave the service cut off from the load balancer.
         if self.rule_removed or not self._rule_present():
             self._restore_rule()
+        return None
+
+    def verify_cleanup(self) -> CheckResult:
+        # Read-only: the exact ALB-to-ECS rule is present again according to describe.
+        if not self.known_good_rule_captured:
+            return CheckResult("cleanup_reverted", True, "nothing was captured, nothing changed")
+
+        deadline = self.clock() + self.cleanup_verify_timeout
+        while True:
+            present = self._rule_present()
+            result = CheckResult(
+                "cleanup_reverted",
+                present,
+                f"tcp/{self.port} from {self.alb_security_group_id} on "
+                f"{self.ecs_security_group_id} "
+                f"{'present' if present else 'still missing'}",
+            )
+            if present or self.clock() >= deadline:
+                return result
+            self.sleep(self.cleanup_verify_interval)

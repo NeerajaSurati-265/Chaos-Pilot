@@ -18,17 +18,17 @@ def walk(incident, *states):
 
 def test_happy_path_reaches_resolved_with_recovery_time():
     incident = Incident(scenario="bad_deployment")
-    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
+    walk(incident, S.INJECTED, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
          S.REMEDIATING, S.VERIFYING, S.RESOLVED)
 
     assert incident.state is S.RESOLVED
     assert incident.recovery_seconds is not None
-    assert [e.state for e in incident.timeline][0] is S.INJECTED
+    assert [e.state for e in incident.timeline][0] is S.PENDING
 
 
 def test_approval_path():
     incident = Incident(scenario="config_change")
-    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
+    walk(incident, S.INJECTED, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
          S.AWAITING_APPROVAL, S.REMEDIATING)
 
     assert incident.state is S.REMEDIATING
@@ -43,7 +43,7 @@ def test_cannot_skip_steps():
 
 def test_cannot_resolve_without_verifying():
     incident = Incident(scenario="bad_deployment")
-    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED, S.REMEDIATING)
+    walk(incident, S.INJECTED, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED, S.REMEDIATING)
 
     with pytest.raises(InvalidTransition):
         incident.transition(S.RESOLVED)
@@ -51,7 +51,7 @@ def test_cannot_resolve_without_verifying():
 
 def test_failure_is_recorded_and_terminal():
     incident = Incident(scenario="bad_deployment")
-    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
+    walk(incident, S.INJECTED, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED,
          S.REMEDIATING, S.VERIFYING)
 
     incident.fail("Healthy task count stayed at 0 after 300s")
@@ -73,7 +73,7 @@ def test_verification_needs_at_least_one_passing_check():
 
 def test_escalated_is_terminal_and_cannot_reach_remediation_or_resolution():
     incident = Incident(scenario="config_change")
-    walk(incident, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED, S.ESCALATED)
+    walk(incident, S.INJECTED, S.DETECTED, S.INVESTIGATING, S.POLICY_DECIDED, S.ESCALATED)
 
     assert incident.state is S.ESCALATED
     assert incident.recovery_seconds is None

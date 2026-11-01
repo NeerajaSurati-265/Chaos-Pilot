@@ -209,6 +209,7 @@ def test_restore_and_verify(clients, scenario):
 
 def test_cleanup_restores_rule_if_still_removed(clients, scenario):
     (_, ec2_stub), _, _ = clients
+    scenario.known_good_rule_captured = True
     scenario.rule_removed = True
     ec2_stub.add_response(
         "authorize_security_group_ingress", {"Return": True},
@@ -222,6 +223,7 @@ def test_cleanup_restores_rule_if_still_removed(clients, scenario):
 
 def test_cleanup_tolerates_rule_already_restored(clients, scenario):
     (_, ec2_stub), _, _ = clients
+    scenario.known_good_rule_captured = True
     scenario.rule_removed = True
     ec2_stub.add_client_error(
         "authorize_security_group_ingress",
@@ -302,3 +304,52 @@ def test_inject_fails_and_captures_nothing_without_the_exact_rule(clients, scena
     assert scenario.rule_description is None
     assert not scenario.rule_removed
     assert not scenario.remediation_context().known_good_rule_captured
+
+
+def test_cleanup_does_nothing_when_the_rule_was_not_present_before_injection(clients, scenario):
+    (_, ec2_stub), _, _ = clients  # nothing queued: any AWS call fails the test
+    expect_rule(ec2_stub, False)
+    with pytest.raises(RuntimeError):
+        scenario.inject()
+
+    assert scenario.cleanup() == "rule was not present before injection"
+
+
+def test_inject_failure_on_missing_rule_skips_cleanup_with_a_reason(clients, scenario):
+    (_, ec2_stub), _, _ = clients  # the only call is the inject-time describe, no authorize
+    expect_rule(ec2_stub, False)
+    fake = scenario
+    pipeline = Pipeline(
+        store=IncidentStore(),
+        investigator=RuleBasedInvestigator(),
+        policy=PolicyEngine(),
+        remediation=RemediationEngine([], allowed_actions=DEFAULT_RULES),
+        experiments_enabled=lambda: True,
+    )
+    incident = pipeline.start(fake)
+    pipeline.run(incident, fake)
+
+    assert incident.state is IncidentState.FAILED
+    assert incident.cleanup.attempted is False
+    assert incident.cleanup.skipped_reason == "rule was not present before injection"
+    assert incident.timeline[-1].note == "Cleanup skipped: rule was not present before injection"
+
+
+def test_cleanup_still_restores_when_the_revoke_failed_but_may_have_applied(clients, scenario):
+    (_, ec2_stub), _, _ = clients
+    expect_rule(ec2_stub, True)
+    ec2_stub.add_client_error(
+        "revoke_security_group_ingress", service_error_code="RequestTimeout"
+    )
+    with pytest.raises(ClientError):
+        scenario.inject()
+    assert scenario.known_good_rule_captured and not scenario.rule_removed
+
+    expect_rule(ec2_stub, False)  # AWS applied the revoke although the call failed
+    ec2_stub.add_response(
+        "authorize_security_group_ingress", {"Return": True},
+        {"GroupId": ECS_SG, "IpPermissions": [PERMISSION]},
+    )
+
+    assert scenario.cleanup() is None
+    assert not scenario.rule_removed

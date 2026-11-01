@@ -13,7 +13,7 @@ from chaos_pilot.incidents.store import IncidentStore
 from chaos_pilot.investigator.rule_based import RuleBasedInvestigator
 from chaos_pilot.policy.engine import DEFAULT_RULES, PolicyEngine
 from chaos_pilot.remediation.engine import RemediationContext, RemediationEngine
-from chaos_pilot.scenarios.base import Detection
+from chaos_pilot.scenarios.base import Detection, Injection
 from tests.test_remediation_engine import FakeExecutor
 
 S = IncidentState
@@ -39,9 +39,16 @@ class FakeScenario:
         self.verified = verified
         self.raise_on = raise_on
         self.cleaned_up = False
+        self.cleanup_verified = True
 
     def inject(self):
-        return "injected"
+        return Injection("injected", {"type": "fake_fault"})
+
+    def pre_injection_state(self):
+        return {"task_definition": "app:1"}
+
+    def verify_cleanup(self):
+        return CheckResult("cleanup_reverted", self.cleanup_verified, "fake revert check")
 
     def detect(self):
         if self.raise_on == "detect":
@@ -164,7 +171,8 @@ def test_cleanup_failure_on_an_escalated_incident_is_recorded():
     incident = run(make_pipeline(), scenario)
 
     assert incident.state is S.ESCALATED
-    assert incident.timeline[-1].note == "Cleanup failed: AWS throttled"
+    assert incident.cleanup.error == "AWS throttled"
+    assert incident.timeline[-1].note.startswith("Cleanup failed: AWS throttled")
 
 
 def test_escalated_incident_cannot_be_approved_or_rejected():
@@ -205,7 +213,10 @@ def test_action_that_does_not_fit_the_incident_type_never_reaches_remediation():
 
     assert incident.state is S.REJECTED
     assert incident.report()["policy_decision"] == "DENY"
-    assert "does not fit incident type 'config_change'" in incident.timeline[-1].note
+    assert any(
+        "does not fit incident type 'config_change'" in e.note
+        for e in incident.timeline if e.state is S.REJECTED
+    )
     assert incident.remediation_result is None
     assert executed(pipeline) == []
 

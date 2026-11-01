@@ -4,6 +4,7 @@ import threading
 from chaos_pilot.core.killswitch import Aborted, KillSwitch, RunGuard
 from chaos_pilot.incidents.models import (
     TERMINAL_STATES,
+    CleanupResult,
     Decision,
     Incident,
     IncidentState,
@@ -94,17 +95,41 @@ class Pipeline:
     def _cleanup(self, incident: Incident, scenario: Scenario):
         injecting = incident.id in self._inject_started
         self._inject_started.discard(incident.id)
-        if incident.state is S.ABORTED and not injecting:
-            incident.add_note("Nothing was injected; cleanup skipped")
-            return
+        if injecting:
+            result = self._revert_and_check(scenario)
+        else:
+            result = CleanupResult(attempted=False, skipped_reason="nothing was injected")
+        incident.cleanup = result
+        incident.add_note(result.summary())
+        if result.attempted and not result.verified:
+            logger.error(
+                "Incident %s: cleanup revert not verified, the test workload may still be "
+                "faulted: %s", incident.id, result.verification_detail,
+            )
+
+    @staticmethod
+    def _revert_and_check(scenario: Scenario) -> CleanupResult:
+        succeeded, error = True, None
         try:
-            scenario.cleanup()
-            if incident.state in (S.ESCALATED, S.ABORTED):
-                incident.add_note(
-                    "Cleanup completed: injected fault reverted (revert not independently verified)"
-                )
-        except Exception as error:
-            incident.add_note(f"Cleanup failed: {error}")
+            skipped = scenario.cleanup()
+            if skipped:
+                return CleanupResult(attempted=False, skipped_reason=skipped)
+        except Exception as cleanup_error:
+            succeeded, error = False, str(cleanup_error)
+        # Checked even when cleanup raised: that is when the evidence matters most.
+        try:
+            check = scenario.verify_cleanup()
+            verified, detail = check.passed, check.detail
+        except Exception as check_error:
+            verified = False
+            detail = f"verification error: {type(check_error).__name__}: {check_error}"
+        return CleanupResult(
+            attempted=True,
+            succeeded=succeeded,
+            error=error,
+            verified=verified,
+            verification_detail=detail,
+        )
 
     def _run(self, incident: Incident, scenario: Scenario, guard: RunGuard):
         if not self.experiments_enabled():
@@ -114,7 +139,12 @@ class Pipeline:
         guard.checkpoint("before inject")
         # Flagged before the call so an inject that fails midway still gets cleanup.
         self._inject_started.add(incident.id)
-        incident.add_note(scenario.inject())
+        try:
+            injection = scenario.inject()
+        finally:
+            incident.pre_injection_state = scenario.pre_injection_state()
+        incident.injected_fault = injection.injected_fault
+        incident.transition(S.INJECTED, injection.summary)
 
         detection = scenario.detect()
         incident.signals = detection.signals

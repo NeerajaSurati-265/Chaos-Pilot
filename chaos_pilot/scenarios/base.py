@@ -1,8 +1,14 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from chaos_pilot.incidents.models import Signal, VerificationResult
+from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
 from chaos_pilot.remediation.engine import RemediationContext
+
+
+@dataclass(frozen=True)
+class Injection:
+    summary: str
+    injected_fault: dict
 
 
 @dataclass(frozen=True)
@@ -20,7 +26,11 @@ class Scenario(Protocol):
 
     name: str
 
-    def inject(self) -> str: ...
+    def inject(self) -> Injection: ...
+
+    def pre_injection_state(self) -> dict:
+        """The known-good state captured before the fault ({} if nothing was captured yet)."""
+        ...
 
     def detect(self) -> Detection: ...
 
@@ -28,4 +38,10 @@ class Scenario(Protocol):
 
     def verify(self) -> VerificationResult: ...
 
-    def cleanup(self) -> None: ...
+    def cleanup(self) -> str | None:
+        """Revert the fault. Returns a reason if it deliberately did nothing, else None."""
+        ...
+
+    def verify_cleanup(self) -> CheckResult:
+        """Read-only check that the known-good state is back after cleanup()."""
+        ...

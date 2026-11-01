@@ -10,6 +10,7 @@ def utc_now() -> datetime:
 
 
 class IncidentState(str, Enum):
+    PENDING = "PENDING"  # created, nothing injected yet
     INJECTED = "INJECTED"
     DETECTED = "DETECTED"
     INVESTIGATING = "INVESTIGATING"
@@ -33,6 +34,7 @@ TERMINAL_STATES = {
 }
 
 ALLOWED_TRANSITIONS = {
+    IncidentState.PENDING: {IncidentState.INJECTED},
     IncidentState.INJECTED: {IncidentState.DETECTED},
     IncidentState.DETECTED: {IncidentState.INVESTIGATING},
     IncidentState.INVESTIGATING: {IncidentState.POLICY_DECIDED},
@@ -110,11 +112,40 @@ class TimelineEvent:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class CleanupResult:
+    """What happened to the injected fault afterwards, and whether the revert was checked."""
+    attempted: bool
+    skipped_reason: str | None = None
+    succeeded: bool | None = None
+    error: str | None = None
+    verified: bool | None = None
+    verification_detail: str | None = None
+
+    def summary(self) -> str:
+        if not self.attempted:
+            return f"Cleanup skipped: {self.skipped_reason}"
+        head = "Cleanup completed" if self.succeeded else f"Cleanup failed: {self.error}"
+        sep = "," if self.succeeded else ";"
+        check = "verified" if self.verified else "NOT verified"
+        return f"{head}{sep} revert {check}: {self.verification_detail}"
+
+    def to_dict(self) -> dict:
+        return {
+            "attempted": self.attempted,
+            "skipped_reason": self.skipped_reason,
+            "succeeded": self.succeeded,
+            "error": self.error,
+            "verified": self.verified,
+            "verification_detail": self.verification_detail,
+        }
+
+
 @dataclass
 class Incident:
     scenario: str
     id: str = field(default_factory=lambda: f"inc-{uuid4().hex[:8]}")
-    state: IncidentState = IncidentState.INJECTED
+    state: IncidentState = IncidentState.PENDING
     signals: list[Signal] = field(default_factory=list)
     diagnosis: Diagnosis | None = None
     policy_decision: PolicyDecision | None = None
@@ -124,6 +155,10 @@ class Incident:
     human_intervention: bool = False
     failure_reason: str | None = None
     abort_reason: str | None = None
+    # Known-good state captured before the fault, the fault itself, and the cleanup outcome.
+    pre_injection_state: dict | None = None
+    injected_fault: dict | None = None
+    cleanup: CleanupResult | None = None
     timeline: list[TimelineEvent] = field(default_factory=list)
 
     def __post_init__(self):
@@ -164,16 +199,27 @@ class Incident:
         self.state = IncidentState.ABORTED
         self.timeline.append(TimelineEvent(IncidentState.ABORTED, utc_now(), reason))
 
+    def _first_at(self, state: IncidentState) -> datetime | None:
+        return next((e.at for e in self.timeline if e.state is state), None)
+
+    @property
+    def detect_seconds(self) -> float | None:
+        # Measured from the INJECTED entry (injection succeeded) to the DETECTED entry.
+        injected, detected = self._first_at(IncidentState.INJECTED), self._first_at(
+            IncidentState.DETECTED
+        )
+        if injected is None or detected is None:
+            return None
+        return (detected - injected).total_seconds()
+
     @property
     def recovery_seconds(self) -> float | None:
-        # Measured from detection to verified recovery.
+        # Measured from detection to the RESOLVED entry. Entries added after the terminal
+        # state (cleanup) must not move the end point.
         if self.state is not IncidentState.RESOLVED:
             return None
-        detected = next(
-            (e.at for e in self.timeline if e.state is IncidentState.DETECTED),
-            self.timeline[0].at,
-        )
-        return (self.timeline[-1].at - detected).total_seconds()
+        detected = self._first_at(IncidentState.DETECTED) or self.timeline[0].at
+        return (self._first_at(IncidentState.RESOLVED) - detected).total_seconds()
 
     def report(self) -> dict:
         return {
@@ -204,10 +250,14 @@ class Incident:
                 {"name": c.name, "passed": c.passed, "detail": c.detail}
                 for c in (self.verification.checks if self.verification else ())
             ],
+            "detect_seconds": self.detect_seconds,
             "recovery_seconds": self.recovery_seconds,
             "human_intervention": self.human_intervention,
             "failure_reason": self.failure_reason,
             "abort_reason": self.abort_reason,
+            "pre_injection_state": self.pre_injection_state,
+            "injected_fault": self.injected_fault,
+            "cleanup": self.cleanup.to_dict() if self.cleanup else None,
             "timeline": [
                 {"state": e.state.value, "at": e.at.isoformat(), "note": e.note}
                 for e in self.timeline

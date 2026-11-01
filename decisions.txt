@@ -47,6 +47,72 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-11-01 | uncommitted | ConfigChange cleanup restores only a rule it removed
+  What:  ConfigChangeScenario.cleanup() used to re-add the rule whenever it was absent, so an
+         inject() that refused because the rule was already missing (unknown start state) was
+         followed by a cleanup that added a rule the scenario never removed. It now acts only when
+         known_good_rule_captured is true (rule confirmed present before injection) and the rule
+         is gone (rule_removed, or absent per describe). Otherwise it returns the reason
+         "rule was not present before injection" and the pipeline records
+         CleanupResult(attempted=False, skipped_reason=...). Scenario.cleanup() now returns
+         str | None: a reason when it deliberately did nothing. A revoke that fails or times out
+         after the rule was captured still gets restored (cleanup checks describe and re-adds).
+  Tests: test_config_change.py: 3 new; 2 existing cleanup tests now also set
+         known_good_rule_captured (they set rule_removed alone, a state inject() cannot produce).
+
+2026-11-01 | uncommitted | Accurate report and verified cleanup (Session B item 6, weakness 2)
+  What:  New initial state PENDING. An incident is created in PENDING (the API needs an id
+         before the run) and enters INJECTED only when inject() returns, so a failed injection
+         ends FAILED and never shows INJECTED. ALLOWED_TRANSITIONS gains PENDING -> INJECTED;
+         INJECTED -> DETECTED is unchanged. fail() and abort() work from PENDING like any
+         non-terminal state. Rejected: creating the incident after inject() (a hidden state would
+         exist anyway).
+         inject() returns Injection(summary, injected_fault). Scenarios expose
+         pre_injection_state(), built from attributes already captured (no new AWS calls), read
+         after inject() even when it raised, so a failed injection keeps its evidence.
+           BadDeployment fault: {type: unhealthy_task_definition_revision, task_definition: <bad
+             ARN>, env: {HEALTHY: "false"}}; pre-state: cluster, service, known-good task
+             definition, known_good_was_healthy.
+           ConfigChange fault: {type: security_group_rule_removed, security_group_id, protocol,
+             port, source_security_group_id}; pre-state: the same plus the rule description.
+         Incident.cleanup is a CleanupResult(attempted, skipped_reason, succeeded, error,
+         verified, verification_detail), in report(). It replaces the free-text cleanup notes; one
+         timeline entry is generated from it for every outcome, e.g. "Cleanup completed, revert
+         verified: ...", "Cleanup failed: <error>; revert NOT verified: ...", "Cleanup skipped:
+         nothing was injected". Cleanup is now skipped whenever inject() was never called (before
+         this it also ran after an env-gate FAILED).
+         Scenario.verify_cleanup() -> CheckResult is a read-only check with the existing describe
+         calls and core/aws.py clients (5 s / 15 s timeouts, standard retries). Bounded retry:
+         cleanup_verify_timeout 30 s, interval 5 s, because a describe right after a write can
+         lag. It does not use the kill-switch guard, so it still runs while the switch is engaged.
+         It runs even if cleanup() raised; an error in the check itself is recorded as
+         verified=False with "verification error: ...". Failures are logged at ERROR.
+         LIMIT (BadDeployment.verify_cleanup): it checks only that the service's task definition is
+         the known-good revision. It does not wait for the rollout to complete (the rollout state
+         is only included in the detail) and does not check that the bad revision was
+         deregistered, which would be another AWS call. Passing means "the revert was applied",
+         not "the service is healthy again". ConfigChange checks that the exact rule is present.
+         A failed cleanup verification never changes the terminal state. Terminal states are
+         immutable; the state records what the workflow did and cleanup.verified records the
+         environment.
+           RESOLVED: recovery was proven earlier and cleanup is normally a no-op afterwards; a
+             failed check is anomalous, the state stays, cleanup.verified=false is surfaced.
+           FAILED, ABORTED, ESCALATED, REJECTED: cleanup is the only thing reverting the fault; the
+             state stays truthful and verified=false means the workload may still be faulted and
+             needs a manual restore.
+         Not implemented (roadmap 7a): refuse new starts while the last cleanup is unverified,
+         with an explicit acknowledge to clear.
+         Report: added pre_injection_state, injected_fault, cleanup, detect_seconds.
+         detect_seconds = INJECTED entry to DETECTED entry, None if never injected or detected.
+         recovery_seconds unchanged in meaning (DETECTED entry to RESOLVED, RESOLVED only); the end
+         point was timeline[-1], which a cleanup entry appended after RESOLVED would have moved, so
+         it now uses the RESOLVED entry.
+  Tests: tests/test_report_accuracy.py (26 new). Updated existing tests: test_pipeline.py (FakeScenario
+         helper; cleanup-failed note assertion; REJECTED reason no longer the last entry),
+         test_kill_switch.py (skipped-cleanup wording; cleanup-failed prefix),
+         test_incident_lifecycle.py (walks start at INJECTED; first entry is PENDING). Full suite
+         202 passed (baseline 174; the kill-switch state parametrizations gained PENDING, +2).
+
 2026-11-01 | uncommitted | Runtime kill switch (Session B item 5)
   What:  New chaos_pilot/core/killswitch.py: KillSwitch (threading.Event + reason, engaged_at,
          engage_count), RunGuard and Aborted. One KillSwitch is created in ChaosEngine and

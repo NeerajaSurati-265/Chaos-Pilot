@@ -188,7 +188,7 @@ def test_abort_before_inject_skips_cleanup_and_injects_nothing():
     assert incident.state is S.ABORTED
     assert not scenario.injected
     assert not scenario.cleaned_up
-    assert notes(incident)[-1] == "Nothing was injected; cleanup skipped"
+    assert notes(incident)[-1] == "Cleanup skipped: nothing was injected"
     assert executed(pipeline) == []
 
 
@@ -357,7 +357,7 @@ def test_cleanup_failure_during_abort_is_recorded_and_state_stays_aborted():
     incident = run(pipeline, scenario)
 
     assert incident.state is S.ABORTED
-    assert notes(incident)[-1] == "Cleanup failed: AWS throttled"
+    assert notes(incident)[-1].startswith("Cleanup failed: AWS throttled")
 
 
 def test_release_does_not_resume_an_aborted_incident():
