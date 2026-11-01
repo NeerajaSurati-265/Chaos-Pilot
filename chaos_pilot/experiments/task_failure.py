@@ -1,4 +1,4 @@
-import boto3
+from chaos_pilot.core.aws import make_client
 
 
 class ExperimentNotAllowed(Exception):
@@ -10,7 +10,7 @@ class TaskFailureExperiment:
     def __init__(self, cluster_name: str, service_name: str, ecs_client=None):
         self.cluster_name = cluster_name
         self.service_name = service_name
-        self.ecs = ecs_client or boto3.client("ecs")
+        self.ecs = ecs_client or make_client("ecs")
 
     def _ensure_task_is_allowed(self, task_id: str):
         # Only tasks that belong to the test service in the test cluster

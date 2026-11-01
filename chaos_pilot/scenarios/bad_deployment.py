@@ -1,8 +1,7 @@
 import time
 from typing import Callable
 
-import boto3
-
+from chaos_pilot.core.aws import make_client
 from chaos_pilot.incidents.models import CheckResult, Signal, VerificationResult
 from chaos_pilot.remediation.engine import RemediationContext
 from chaos_pilot.scenarios.base import Detection
@@ -41,8 +40,8 @@ class BadDeploymentScenario:
         self.cluster = cluster
         self.service = service
         self.target_group_arn = target_group_arn
-        self.ecs = ecs_client or boto3.client("ecs")
-        self.elbv2 = elbv2_client or boto3.client("elbv2")
+        self.ecs = ecs_client or make_client("ecs")
+        self.elbv2 = elbv2_client or make_client("elbv2")
         self.detect_timeout = detect_timeout
         self.verify_timeout = verify_timeout
         self.poll_interval = poll_interval

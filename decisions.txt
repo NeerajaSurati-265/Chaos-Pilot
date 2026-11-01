@@ -3,7 +3,7 @@ Running log of changes and design decisions. Plain text, lines under 100 charact
 Rule: every code change or design decision adds an entry here in the same change.
 Sources: README.md, git history, and the code in chaos_pilot/, app/ and tests/.
 Anything not backed by those is marked "source: project owner" or listed under OPEN QUESTIONS.
-Last updated: 2026-10-31
+Last updated: 2026-11-01
 
 
 1. FROZEN MVP DECISIONS
@@ -46,6 +46,45 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 ------------------------------------------------------------------------------------------------
 Format: date | commit | component
         What / Why / Files
+
+2026-11-01 | uncommitted | Shared boto3 client factory with bounded timeouts and retries
+  What:  New chaos_pilot/core/aws.py holds the only AWS_CONFIG and make_client(service_name,
+         region_name=None), the only place boto3.client is called. All 8 app clients use it:
+         BadDeploymentScenario (ecs, elbv2), ConfigChangeScenario (ec2, ecs, elbv2),
+         TaskFailureExperiment (ecs) and the two executors (ecs, ec2). The six scenario and
+         experiment clients had boto3 defaults (60 s read timeout). Injected *_client arguments
+         are kept, so tests still pass stubbed clients. Values are constants, not env vars:
+           connect_timeout 5 s   a reachable AWS endpoint connects in well under a second.
+           read_timeout 15 s     unchanged from the executors; these control-plane calls return
+                                 in seconds.
+           retries standard, max_attempts 3
+                                 standard mode backs off on throttling and transient errors. In
+                                 botocore max_attempts counts retries, so 3 means up to 4 calls
+                                 (the old executor value 2 meant 3). Worst case per call is about
+                                 4 x 15 s plus backoff, about 65 s.
+         A timeout is a BotoCoreError and surfaces as a normal exception; every AWS call path
+         already catches Exception (remediation engine, pipeline), so no except was widened.
+         Retry safety: a retry after a timed-out call that AWS applied must not end FAILED.
+         authorize (restore executor, cleanup) already treated InvalidPermission.Duplicate as done.
+         ConfigChangeScenario.inject() did not treat InvalidPermission.NotFound on the revoke as
+         done, so it would have ended FAILED (cleanup then re-adds the rule). It now accepts
+         NotFound only after it had confirmed the rule was present (it already refuses to inject
+         when the rule is missing, before any revoke), and only if _rule_present() then confirms
+         the rule is gone; otherwise the error is raised. rule_removed is set after that check.
+         rollback uses update_service to the same revision, which is idempotent.
+         Whether AWS returns NotFound or success for revoking an absent rule on a VPC security
+         group was not verified; the handling is correct either way.
+         Not changed: polling logic. Each _poll has a deadline (detect_timeout and verify_timeout
+         600 s) checked between checks, so the last check can overrun by its calls' worst case.
+  Why:   projectcontext.md rule 8: every AWS call needs a bounded timeout. Closes the open item
+         "scenario and experiment clients lack explicit timeouts".
+  Files: chaos_pilot/core/aws.py, chaos_pilot/scenarios/bad_deployment.py,
+         chaos_pilot/scenarios/config_change.py, chaos_pilot/experiments/task_failure.py,
+         chaos_pilot/remediation/executors.py, tests/test_aws_client.py,
+         tests/test_config_change.py
+  Tests: 131 passing (119 before): factory config, a guard that only core/aws.py calls
+         boto3.client/resource, Read/Connect timeouts in remediation and verification ending
+         FAILED with the error on the timeline, and the inject NotFound cases.
 
 2026-10-31 | uncommitted | Added progress.md
   What:  New progress.md at the repo root summarising done, uncommitted and pending work.
@@ -373,7 +412,8 @@ Format: date | commit | component
   - Remediation runs on whatever AWS credentials the process has. IAM needed: ecs:UpdateService,
     ecs:DescribeTaskDefinition, ecs:DescribeServices, ec2:AuthorizeSecurityGroupIngress,
     ec2:DescribeSecurityGroups. No Terraform defines this role yet.
-  - Scenario and experiment clients (not the executors) still have no explicit AWS timeouts.
+  - (Fixed 2026-11-01: all boto3 clients now come from chaos_pilot/core/aws.py with explicit
+    timeouts and retries; see the change log.)
 
 
 OPEN QUESTIONS

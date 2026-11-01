@@ -1,7 +1,7 @@
 # Chaos-Pilot: Project Context
 
 > Read this file at the start of every session before touching code.
-> Status last updated: 27 Oct 2026 (code audit). Anything below marked **[verify]** may have changed since; check the repo before relying on it.
+> Status last updated: 1 Nov 2026. Anything below marked **[verify]** may have changed since; check the repo before relying on it.
 
 ---
 
@@ -58,7 +58,7 @@ SELECT SCENARIO → INJECT → DETECT (deterministic) → AI INVESTIGATOR (diagn
 | Detection | Polls deterministic signals, opens the incident | No AI involved |
 | Incident model + store | State machine, timeline, evidence | Steps can't be skipped; RESOLVED only via verification |
 | AI Investigator | Sanitized evidence in → diagnosis, confidence, explanation, recommended action out | Advisory only |
-| Policy Engine | Maps the proposed action to AUTO / HUMAN_APPROVAL / DENY with a reason | Deterministic, unit-testable |
+| Policy Engine | Maps the proposed action to AUTO / HUMAN_APPROVAL / DENY / ESCALATE with a reason | Deterministic, unit-testable |
 | Approval step | Pauses for a human decision, with timeout | Reject or timeout = no execution |
 | Remediation Engine | Runs the authorized action via an executor | Allow-list only; makes no decisions |
 | Verification | Running == desired, tasks healthy, ALB targets healthy, correct revision | Bounded polling; timeout = FAILED |
@@ -68,7 +68,7 @@ SELECT SCENARIO → INJECT → DETECT (deterministic) → AI INVESTIGATOR (diagn
 
 `INJECTED → DETECTED → INVESTIGATING → POLICY_DECIDED → AWAITING_APPROVAL (if needed) → REMEDIATING → VERIFYING → RESOLVED`
 
-Any failure in remediation or verification → `FAILED` with evidence. DENY or human rejection → terminal, no remediation.
+Any failure in remediation or verification → `FAILED` with evidence. DENY or human rejection → terminal, no remediation. `escalate_to_human` → policy decision `ESCALATE` → terminal `ESCALATED` (reached only from `POLICY_DECIDED`), no remediation or verification; the incident records a timeline entry and a log warning only, and the injected fault is reverted by cleanup.
 
 ### Resolution report must contain
 
@@ -82,6 +82,7 @@ Known from imports in `chaos_pilot/core/pipeline.py`. **[verify]** with `ls -R c
 
 ```
 chaos_pilot/
+  core/aws.py               # Shared boto3 client factory (timeouts + bounded retries); only place boto3.client is called
   core/pipeline.py          # Pipeline: inject → detect → investigate → policy → (approve) → remediate → verify
   incidents/models.py       # Incident, IncidentState, Decision, Diagnosis, PolicyDecision
   incidents/store.py        # IncidentStore
@@ -123,7 +124,7 @@ git status && git diff --stat && git diff
 | Scenario | Injected problem | Demonstrates | Default policy | Status |
 |---|---|---|---|---|
 | **Bad Deployment** | Deploy a deliberately unhealthy task-definition revision | Correlate with new revision; roll back to known-good; verify | **AUTO** (bounded, reversible when prior revision verified) | Built; works end to end **in tests only** |
-| **Config Change** | Remove a specific ALB-to-ECS security-group rule | Correlate with the change; restore known-good config after approval | **HUMAN_APPROVAL** | Built; **no `restore_known_good_config` executor yet** [verify] |
+| **Config Change** | Remove a specific ALB-to-ECS security-group rule | Correlate with the change; restore known-good config after approval | **HUMAN_APPROVAL** | Built; restore executor exists (`restore_security_group_rule`, re-adds the exact rule captured before injection) |
 | **Dependency Failure** | Make a simulated internal dependency unavailable | Tell dependency vs application failure; bounded fix or escalate | HUMAN_APPROVAL initially | Not built |
 | **Cascading Failure** | One root fault → several downstream symptoms | Correlate symptoms into one incident, find root cause | Risk-dependent | Not built; may be replaced if not distinct from Dependency |
 | ECS Task Crash (dev test) | Stop a task | Validate architecture end to end | n/a | Raw stop-task endpoint only; no incident/detection/verification |
@@ -132,34 +133,35 @@ git status && git diff --stat && git diff
 
 ---
 
-## 7. Current status (audit, 27 Oct 2026)
+## 7. Current status (1 Nov 2026)
 
-All 66 tests passed; `terraform fmt -check` and `terraform validate` clean.
+All 131 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
 
 | Component | Status |
 |---|---|
 | Incident model + lifecycle | Done |
 | Deterministic detection | Done for Bad Deployment and Config Change |
 | AI Investigator | Done (rule-based default, optional Claude with fallback; never run against real API) |
-| Policy Engine | Done, but `escalate_to_human` ends as REJECTED (no real escalation path) |
-| Remediation Engine | Done with 2 executors; `restore_dependency` and `restore_known_good_config` allowed by policy but have no executor |
+| Policy Engine | Done, including an incident-type → permitted-actions check and an `ESCALATE` decision that ends as `ESCALATED`; escalation has no notification or hand-off yet |
+| Remediation Engine | Done with 2 executors (`rollback_to_previous_revision`, `restore_security_group_rule`), preconditions and structured SUCCEEDED/FAILED results; the allow-listed actions that had no executor were removed |
 | Verification | Done, uses real AWS state |
 | Notification | Missing (destination is an open question in `decisions.txt`) |
 | Dashboard | Missing; API returns JSON only |
 | Kill switch | Partial: env var only, can't be flipped at runtime or abort a running experiment |
+| AWS timeouts / retries | Done: every boto3 client comes from `chaos_pilot/core/aws.py` (connect 5 s, read 15 s, standard retries, `max_attempts` 3) |
 | Cleanup / restore | Partial: only inside app process; no standalone scripts; revert not verified |
 | Real AWS runs | None recorded |
 
-### Change made after the audit [verify whether committed]
+### Change made after the audit (committed in `a62fd92`)
 
-`pipeline.py` now stores the remediation result on the incident and fails the incident when `result.succeeded` is false (no verification is run). `models.py` gained `remediation_result: Any = None`. That session also noted in `decisions.txt` that no Terraform role exists for the IAM permissions below, and that boto3 clients still have no explicit timeouts.
+`pipeline.py` stores the remediation result on the incident and fails the incident when `result.succeeded` is false (no verification is run). `models.py` gained `remediation_result: Any = None`. `decisions.txt` notes that no Terraform role exists for the IAM permissions below.
 
 ### Known weaknesses
 
-1. **Policy doesn't check that the AI's action fits the incident type.** If the AI recommends `rollback` with confidence ≥ 0.7 during a Config Change, policy auto-approves it. It only fails safely by accident (no known-good revision → error → FAILED).
+1. ~~**Policy doesn't check that the AI's action fits the incident type.**~~ **Fixed:** `SCENARIO_ACTIONS` in `policy/engine.py` maps each scenario to its permitted action; a mismatch is DENY.
 2. After REJECTED / FAILED, cleanup silently reverts the fault and **nothing verifies the revert worked**.
 3. **No IAM role for Chaos-Pilot itself**; app runs with local credentials. Code needs: `ecs:UpdateService`, `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `ec2:AuthorizeSecurityGroupIngress`, `ec2:DescribeSecurityGroups` (plus whatever injectors use).
-4. **No explicit boto3 timeouts/retries** (60 s defaults).
+4. ~~**No explicit boto3 timeouts/retries** (60 s defaults).~~ **Fixed:** one factory, `chaos_pilot/core/aws.py`. Polling loops keep their own deadlines; the last check can overrun a deadline by one check's worst-case AWS calls.
 5. Incident enters `INJECTED` **before** injection runs; injected fault and cleanup result have no report fields.
 
 ---
@@ -168,13 +170,13 @@ All 66 tests passed; `terraform fmt -check` and `terraform validate` clean.
 
 Plan: few, larger sessions run **sequentially** to save usage. One branch per session is fine; `/clear` between sessions.
 
-### Session A: policy and remediation safety
+### Session A: policy and remediation safety (items 1-3 done)
 1. Deterministic **incident type → permitted actions** map in the Policy Engine. Mismatched AI action → DENY (or substitute mapped default, whichever fits the design), reason on the timeline. Test the exact rollback-during-Config-Change case.
 2. Real **`escalate_to_human` path** (escalated state or AWAITING_APPROVAL with no executable action), evidence preserved, transition validation intact.
 3. **`restore_known_good_config` executor**: restore the ALB-to-ECS SG rule; allow-listed, precondition (known-good captured before injection), idempotent, bounded timeouts, structured result. Don't change the HUMAN_APPROVAL default.
 
-### Session B: robustness
-4. **Shared boto3 client factory** (`botocore.config.Config`: explicit connect/read timeouts, bounded retries); switch all clients to it.
+### Session B: robustness (item 4 done; 5 and 6 still open)
+4. **Done:** shared boto3 client factory (`botocore.config.Config`: explicit connect/read timeouts, bounded retries); all clients use it.
 5. **Runtime kill switch** (endpoint + flag/`threading.Event`, no DB) checked before inject, before remediation, and inside every polling loop; aborts, cleans up, marks FAILED/ABORTED.
 6. **Accurate report**: pre-injection state (or failed injection = FAILED), injected-fault field, cleanup-result field.
 

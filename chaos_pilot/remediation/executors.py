@@ -1,13 +1,7 @@
-import boto3
-from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from chaos_pilot.core.aws import make_client
 from chaos_pilot.remediation.engine import PreconditionFailed, RemediationContext
-
-# Bounded so a hung AWS call fails the remediation instead of blocking the pipeline.
-AWS_CONFIG = Config(
-    connect_timeout=5, read_timeout=15, retries={"max_attempts": 2, "mode": "standard"}
-)
 
 
 def _require(context: RemediationContext, *fields: str):
@@ -60,7 +54,7 @@ class RollbackToPreviousRevision:
     def ecs(self):
         # Created on first use, so wiring the engine needs no AWS credentials.
         if self._ecs is None:
-            self._ecs = boto3.client("ecs", config=AWS_CONFIG)
+            self._ecs = make_client("ecs")
         return self._ecs
 
     def check_preconditions(self, context: RemediationContext) -> None:
@@ -104,7 +98,7 @@ class RestoreSecurityGroupRule:
     @property
     def ec2(self):
         if self._ec2 is None:
-            self._ec2 = boto3.client("ec2", config=AWS_CONFIG)
+            self._ec2 = make_client("ec2")
         return self._ec2
 
     def check_preconditions(self, context: RemediationContext) -> None:

@@ -1,7 +1,7 @@
 # Chaos-Pilot: Progress
 
-Last updated: 2026-10-31. Sources: `decisions.txt`, `projectcontext.md`, git history.
-Tests: **119 passing** (mocked AWS only).
+Last updated: 2026-11-01. Sources: `decisions.txt`, `projectcontext.md`, git history.
+Tests: **131 passing** (mocked AWS only).
 
 ## Workflow status
 
@@ -31,14 +31,19 @@ Tests: **119 passing** (mocked AWS only).
 - Preconditions and structured FAILED results for remediation.
 - Claude-backed LLM investigator (recommends only; falls back to rules on any error).
 - ESCALATED terminal state for `escalate_to_human`.
+- Config Change restore audit (`69e6fcd`): known-good rule captured before injection, rule
+  description preserved on restore.
+- Removed dead allow-list entries `restore_known_good_config` and `restore_dependency` (`69e6fcd`).
 
 ## Done, not yet committed
 
-- Config Change restore audit: known-good rule captured before injection, rule description
-  preserved on restore.
-- Removed dead allow-list entries `restore_known_good_config` and `restore_dependency`.
-- Files: policy/engine.py, remediation/engine.py, remediation/executors.py,
-  scenarios/config_change.py, decisions.txt, and four test files.
+- Shared boto3 client factory (`chaos_pilot/core/aws.py`): connect 5 s, read 15 s, standard
+  retries, `max_attempts` 3. All 8 app clients use it.
+- `ConfigChangeScenario.inject()` accepts `InvalidPermission.NotFound` on the revoke only
+  after confirming the rule was present and is now gone.
+- Files: core/aws.py (new), scenarios/bad_deployment.py, scenarios/config_change.py,
+  experiments/task_failure.py, remediation/executors.py, tests/test_aws_client.py (new),
+  tests/test_config_change.py, decisions.txt, projectcontext.md, progress.md.
 
 ## Scenarios
 
@@ -53,9 +58,7 @@ Tests: **119 passing** (mocked AWS only).
 - Escalation hand-off: ESCALATED only logs and records a timeline entry.
 - LLM investigator tested with a stubbed client only; not run against the real API.
 - `allowed_actions` is built from `DEFAULT_RULES`, not the policy instance's rules.
-- Scenario and experiment AWS clients lack explicit timeouts.
 - No Terraform IAM role for the remediation permissions.
-- `projectcontext.md` still says the `restore_known_good_config` executor is missing (stale).
 - Cleanup after Config Change remediation makes one redundant, tolerated AWS call.
 
 ## Open questions
