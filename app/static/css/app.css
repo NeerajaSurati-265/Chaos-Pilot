@@ -201,3 +201,6 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--cream); }
   .main-card { padding: 20px 16px 32px; }
   h1 { font-size: 32px; }
 }
+
+.takeaway { margin: 10px 0 0; font-weight: 600; }
+.takeaway:empty { display: none; }

@@ -92,6 +92,8 @@ chaos_pilot/
   scenarios/base.py         # Scenario base class
 app/main.py                 # FastAPI app: JSON API, `/api/*` read-only dashboard endpoints, `GET /` page, `/reports/{id}` page, `/static` mount
 app/incident_view.py        # Derived read-only fields (outcome, stage durations, approval deadline)
+app/analytics.py            # Pure analytics over incident views (GET /api/analytics) + takeaways
+chaos_pilot/demo/           # Demo mode: fake scenarios/executors + sequential seeder (no AWS)
 app/catalog.py, reports.py  # Scenario wording; markdown report renderer
 app/static/                 # Dashboard: index.html, report.html, css/, js/ (vanilla ES modules, no build step; Chart.js + Google Fonts from CDN)
 terraform/                  # Test workload: VPC, ECS, ALB, security groups (task execution role only)
@@ -112,6 +114,7 @@ decisions.txt               # Running log of design decisions and open questions
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 
 # Run the app and open the dashboard at http://127.0.0.1:8000/
+# Add CHAOS_PILOT_DEMO_DATA=true for demo mode (fake incidents, mocked AWS; restart to switch)
 # Default host only. NEVER use --host 0.0.0.0: the dashboard and kill switch have no auth.
 .venv/bin/uvicorn app.main:app --reload
 
@@ -143,7 +146,7 @@ git status && git diff --stat && git diff
 
 ## 7. Current status (1 Nov 2026)
 
-All 247 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
+All 290 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` were clean at the 27 Oct audit and Terraform has not been touched since [verify].
 
 | Component | Status |
 |---|---|
@@ -154,7 +157,7 @@ All 247 tests pass (mocked AWS). `terraform fmt -check` / `terraform validate` w
 | Remediation Engine | Done with 2 executors (`rollback_to_previous_revision`, `restore_security_group_rule`), preconditions and structured SUCCEEDED/FAILED results; the allow-listed actions that had no executor were removed |
 | Verification | Done, uses real AWS state |
 | Notification | Missing (destination is an open question in `decisions.txt`) |
-| Dashboard | C1 done: sidebar, KPIs, scenario picker, incident page with flowchart, AI vs policy panels, approval card, report downloads and `/reports/{id}`; polls the JSON API. C2 not built: analytics page + `/api/analytics`, demo mode. JS not run by any test, so browser behaviour is unverified. Unauthenticated: local use only |
+| Dashboard | Done (C1 + C2): sidebar, KPIs, scenario picker, incident page with flowchart, AI vs policy panels, approval card, report downloads and `/reports/{id}`, Analytics page fed by `GET /api/analytics`, opt-in demo mode (`CHAOS_PILOT_DEMO_DATA=true`, separate store, fake scenarios, no boto3). JS is syntax-checked with node but never run in a browser, so behaviour there is unverified. Unauthenticated: local use only |
 | Kill switch | Done (in tests): in-memory runtime switch (`core/killswitch.py`) with `GET /kill-switch`, `POST /kill-switch/engage`, `POST /kill-switch/release`; blocks new starts, aborts a running incident at checkpoints, cleans up, ends `ABORTED`. Env gate unchanged. Endpoints unauthenticated; a restart releases it |
 | AWS timeouts / retries | Done: every boto3 client comes from `chaos_pilot/core/aws.py` (connect 5 s, read 15 s, standard retries, `max_attempts` 3) |
 | Cleanup / restore | Partial: runs only inside the app process (no standalone scripts). Result is a structured report field and the revert is read back afterwards (read-only describe, bounded retry); Bad Deployment checks the service revision only, not rollout completion or deregistration |
@@ -189,7 +192,7 @@ Plan: few, larger sessions run **sequentially** to save usage. One branch per se
 6. **Done:** accurate report: `PENDING` until injection succeeds (failed injection = `FAILED`), `pre_injection_state`, `injected_fault`, structured `cleanup` result with a read-only revert check, `detect_seconds`.
 
 ### Session C: dashboard
-7. **C1 done (C2 open: analytics page, demo mode):** UI on the existing JSON API (no heavy framework unless already used): pick + trigger scenario, live lifecycle/timeline, **AI diagnosis shown separately from policy decision**, approve/reject buttons, final report with recovery duration and verification result, FAILED shown honestly.
+7. **Done (C1 + C2):** UI on the existing JSON API (no heavy framework unless already used): pick + trigger scenario, live lifecycle/timeline, **AI diagnosis shown separately from policy decision**, approve/reject buttons, final report with recovery duration and verification result, FAILED shown honestly.
 
 7a. **Not implemented:** refuse new starts while the last incident's cleanup is unverified (`cleanup.verified == false`); needs an explicit acknowledge to clear.
 

@@ -35,6 +35,7 @@ def render_markdown(r: dict) -> str:
     lines = [
         f"# Incident report {r['incident_id']}",
         "",
+        *([f"> **{r['demo_notice']}**", ""] if r.get("demo_notice") else []),
         f"- **Scenario:** {r['scenario']}",
         f"- **Outcome:** {_outcome_line(r)}",
         f"- **Human intervention required:** {'yes' if r['human_intervention'] else 'no'}",

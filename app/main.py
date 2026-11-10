@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import incident_view
+from app import analytics, incident_view
 from app.catalog import build_scenarios
 from app.reports import render_markdown
 from chaos_pilot.core.engine import ChaosEngine
@@ -35,8 +35,22 @@ def report_page(incident_id: str):
     return FileResponse(STATIC_DIR / "report.html")
 
 
+def demo_enabled() -> bool:
+    return os.getenv("CHAOS_PILOT_DEMO_DATA", "false").lower() == "true"
+
+
+def is_demo(engine) -> bool:
+    return getattr(engine, "demo", False) is True
+
+
 @lru_cache
 def get_engine() -> ChaosEngine:
+    if demo_enabled():
+        # Own store and pipeline, fake scenarios: the real engine is never built, so demo and
+        # real incidents cannot mix and no boto3 client is created. Read once; restart to change.
+        from chaos_pilot.demo.seed import build_demo_engine
+
+        return build_demo_engine()
     return ChaosEngine()
 
 
@@ -90,7 +104,7 @@ def start_scenario(name: str, engine: ChaosEngine = Depends(get_engine)):
 
 
 def _view(engine: ChaosEngine, incident) -> dict:
-    return incident_view.build(incident, engine.pipeline.approval_timeout)
+    return incident_view.build(incident, engine.pipeline.approval_timeout, demo=is_demo(engine))
 
 
 @app.get("/incidents")
@@ -126,11 +140,13 @@ def api_config(engine: ChaosEngine = Depends(get_engine)):
     return {
         "experiments_enabled": status["experiments_enabled"],
         "busy": status["status"] == "busy",
+        "demo": is_demo(engine),
         "kill_switch": engine.kill_switch.status(),
         "workload": {
             "cluster": engine.cluster,
             "service": engine.service,
-            "region": os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None,
+            "region": "mocked" if is_demo(engine)
+            else os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None,
         },
         "approval_timeout_seconds": engine.pipeline.approval_timeout,
         "actions": {
@@ -172,3 +188,9 @@ def report_json(incident_id: str, engine: ChaosEngine = Depends(get_engine)):
         _report_or_404(engine, incident_id),
         headers={"Content-Disposition": f'attachment; filename="{incident_id}.json"'},
     )
+
+
+@app.get("/api/analytics")
+def api_analytics(engine: ChaosEngine = Depends(get_engine)):
+    views = [_view(engine, incident) for incident in engine.store.list()]
+    return analytics.compute(views, demo=is_demo(engine))

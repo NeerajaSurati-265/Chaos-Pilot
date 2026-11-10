@@ -69,8 +69,3 @@ export function renderScenarios(onStarted) {
   }
   return out;
 }
-
-export function renderAnalytics() {
-  return [topbar("Analytics"), NONE("Analytics arrives in the next release",
-    "The Dashboard KPIs and the recovery-time chart already use real incidents. Trend, outcome and stage-timing charts are not built yet.")];
-}

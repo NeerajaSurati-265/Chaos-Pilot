@@ -47,6 +47,61 @@ D7  Scope guard: no databases, queues, multi-account support or extra integratio
 Format: date | commit | component
         What / Why / Files
 
+2026-11-01 | uncommitted | Dashboard v2, part C2 (analytics + demo mode)
+  What:  GET /api/analytics computed by pure functions in app/analytics.py from incident views
+         (incident_view.build). Analytics page (#/analytics): MTTR trend, outcome donut, stacked
+         time-per-stage bar, AUTO vs HUMAN_APPROVAL, AI accuracy + confusion table, policy
+         override card, confidence-vs-outcome scatter; each with a one-sentence takeaway built
+         on the server (takeaways[*] = {enough, text}; thin data says "Not enough data yet: <next
+         action>"). Dashboard KPIs, trend arrows and the recovery chart (with its scenario filter)
+         now read /api/analytics instead of client-side maths.
+         Response = totals, mttr{avg_seconds, trend, runs}, outcomes, stages{avg_seconds, samples,
+         by_scenario}, by_policy, ai{diagnosed, correct, wrong, escalated, no_diagnosis, accuracy,
+         per_scenario, confusion, overridden{count, required_approval, of, rate}, investigators},
+         scatter, trends, takeaways, demo. Beyond the planned shape: stages.by_scenario,
+         ai.investigators, trends, takeaways.
+  Rules: finished = terminal state; running / awaiting incidents are counted in totals.running
+         only. MTTR and stage averages use RESOLVED runs only. Trends need 4+ runs (later half vs
+         earlier half, within 10% = flat). AI ground truth is SCENARIO_ACTIONS: correct = the
+         permitted action; escalate_to_human is its own bucket, never correct, and stays in the
+         accuracy denominator; any other action is wrong; no diagnosis is excluded. overridden =
+         policy DENY of the AI's action; required_approval = policy forced a human; escalation is
+         the AI's own request, not an override. With the rule-based investigator the accuracy
+         measures the rules, not an LLM (shown on the page).
+  Demo:  CHAOS_PILOT_DEMO_DATA=true (read once at the first get_engine(); restart to change).
+         get_engine() returns a DemoEngine (chaos_pilot/demo/): own store, kill switch and
+         Pipeline with the real RuleBasedInvestigator, PolicyEngine and RemediationEngine, plus
+         fake scenarios and executors. The real ChaosEngine is not built, so demo and real
+         incidents never mix. No real scenario, no TaskFailureExperiment (stubbed), no boto3
+         client is created even if AWS env vars are set; a test patches boto3 and the client
+         factory to fail. Caveat: ChaosEngine.__init__ still constructs the real executors
+         (lazy, no client) before the demo pipeline replaces them in use; they are never called.
+         A seeder thread runs a fixed 13-step plan sequentially (success, human approve, human
+         reject, verification failure, remediation precondition failure, policy DENY by feeding a
+         Bad Deployment run config-change evidence, escalate, kill-switch abort). Outcomes come
+         from the real pipeline reacting to those inputs. Human approvals use
+         engine.answer_approval, the same call as POST /incidents/{id}/approve|reject. Per-stage
+         sleeps are injectable (DemoTimings; zero in tests) with fixed-seed jitter and no
+         engineered trend; durations are fake-scale. Banner "Demo data: sample incidents from
+         mocked AWS" on every view and /reports/{id}; /api/config.demo = true; md and json
+         exports carry a DEMO DATA notice; the print stylesheet keeps the banner.
+         The seeder releases the kill switch only if the switch's reason is its own
+         (DEMO_ABORT_REASON); a switch the user engaged is never released, and seeding stops
+         early after max_wait. Limitation: if a user engages while the demo's own engage is in
+         effect, KillSwitch keeps the first reason, so that engage is indistinguishable and the
+         seeder releases it.
+  Shared: chaos_pilot/core/engine.py gains an optional gate argument (default = the existing
+         env gate, read at call time) used by start_scenario, get_status and run_task_failure and
+         the default pipeline. Nothing in pipeline, policy, remediation, verification, scenarios,
+         investigators or incidents/models.py changed.
+  Tests: test_analytics.py (pure functions), test_analytics_api.py, test_demo_mode.py,
+         test_engine_gate.py (default engine still uses CHAOS_PILOT_EXPERIMENTS_ENABLED),
+         test_dashboard.py additions including a JS syntax check that runs node over every module.
+  JS check: `node --check file.js` silently passes a broken .js file that uses import/export, so
+         the test pipes each module to `node --input-type=module --check` and first proves the
+         check can fail. The earlier "JS passes node --check" statements for C1 were vacuous;
+         all 19 modules now pass the real check. The JS is still never executed in a browser.
+
 2026-11-01 | uncommitted | Dashboard v2, part C1 (layout, scenarios, incident detail, reports)
   What:  Replaces the first simple dashboard UI (the entry below describes its mechanics, which
          still hold: static files, polling, textContent only). New files: app/static/index.html,

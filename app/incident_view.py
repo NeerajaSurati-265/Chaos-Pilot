@@ -90,7 +90,12 @@ def approval_info(
     }
 
 
-def build(incident: Incident, approval_timeout: float, now: datetime | None = None) -> dict:
+DEMO_NOTICE = "DEMO DATA: sample incident from mocked AWS, not a real run"
+
+
+def build(
+    incident: Incident, approval_timeout: float, now: datetime | None = None, demo: bool = False
+) -> dict:
     """incident.report() plus derived, read-only fields for the dashboard."""
     view = incident.report()
     decision = incident.policy_decision
@@ -101,6 +106,8 @@ def build(incident: Incident, approval_timeout: float, now: datetime | None = No
         policy_action=decision.action if decision else None,
         policy_denied_ai_action=bool(decision and decision.decision is Decision.DENY),
         approval_timeout_seconds=approval_timeout,
+        demo=demo,
+        demo_notice=DEMO_NOTICE if demo else None,
         **approval_info(incident, approval_timeout, now),
     )
     return view

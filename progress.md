@@ -1,7 +1,7 @@
 # Chaos-Pilot: Progress
 
 Last updated: 2026-11-01. Sources: `decisions.txt`, `projectcontext.md`, git history.
-Tests: **247 passing** (mocked AWS only).
+Tests: **290 passing** (mocked AWS only).
 
 ## Workflow status
 
@@ -17,7 +17,7 @@ Tests: **247 passing** (mocked AWS only).
 | Remediation engine | Done: executors, preconditions, structured SUCCEEDED/FAILED results |
 | Verify | Done: real recovery signals, not API success |
 | Notify | **Not built** |
-| Dashboard | C1 done (layout, scenarios, incident detail, reports); C2 (analytics, demo mode) not built; JS not executed by any test |
+| Dashboard | C1 and C2 done (incl. analytics page, demo mode); JS syntax-checked with node but never run in a browser |
 
 ## Done and committed
 
@@ -72,6 +72,21 @@ Tests: **247 passing** (mocked AWS only).
   test_incident_lifecycle.py.
 - Not implemented: refuse new starts while the last cleanup is unverified.
 
+## Dashboard v2, part C2: analytics + demo mode (done, not yet committed)
+
+- `GET /api/analytics` (pure functions in `app/analytics.py`) feeds the Analytics page (7 panels,
+  each with a server-built one-sentence takeaway or "Not enough data yet") and now also the
+  Dashboard KPIs, trend arrows and the recovery chart with its scenario filter.
+- AI accuracy: ground truth is `SCENARIO_ACTIONS`; `escalate_to_human` is its own bucket, not
+  correct, kept in the denominator. The page says the rule-based investigator is what is measured.
+- Demo mode `CHAOS_PILOT_DEMO_DATA=true`: separate `DemoEngine` (fake scenarios/executors, real
+  pipeline/policy/remediation), 13 seeded incidents run sequentially (all six outcomes), banner on
+  every page and report, DEMO DATA line in md/json. No boto3 client or real scenario is created.
+- Seeder releases the kill switch only if it engaged it itself.
+- Shared file: `core/engine.py` got an optional `gate` argument (default unchanged).
+- Tests: 290 total (+43). JS modules are checked with `node --input-type=module --check`.
+- Not verified in a real browser; durations in demo mode are fake-scale.
+
 ## Dashboard v2, part C1 (committed: `1e2854b`)
 
 - Replaced the simple UI: sidebar, KPIs, hero + scenario picker, recent incidents, scenarios band,
@@ -85,11 +100,8 @@ Tests: **247 passing** (mocked AWS only).
   server (timeline entry + `Pipeline.approval_timeout`); the page only counts down from them.
 - Fixed: scenario labels now normalise `bad_deployment` / `bad-deployment` (v1 showed raw names).
 - Chart.js 4.4.1 and Google Fonts load from CDNs (fallback fonts, "Charts are unavailable" note,
-  no SRI hash). KPIs and the recovery chart are computed in the browser from `/incidents`;
-  trend arrows need 4+ finished runs.
-- Not built: `/api/analytics` + Analytics page (the nav item shows a placeholder), demo mode
-  (C2). Not verified in a real browser. The commit message for `1e2854b` mentions analytics,
-  but only the placeholder exists.
+  no SRI hash). C1 computed KPIs and the recovery chart in the browser (replaced in C2).
+- The commit message for `1e2854b` mentions analytics, but C1 only had a placeholder.
 
 ## Dashboard v1 notes (UI replaced by v2; these two points still apply)
 
@@ -107,11 +119,8 @@ Tests: **247 passing** (mocked AWS only).
 ## Next / known gaps
 
 - NOTIFY step.
-- Dashboard C2: `GET /api/analytics` + Analytics page (MTTR trend, outcome donut, stage timing,
-  AUTO vs HUMAN_APPROVAL, AI accuracy with a separate `escalate_to_human` bucket), and opt-in demo
-  mode (`CHAOS_PILOT_DEMO_DATA`, separate store, no real scenarios or boto3 clients).
 - 7a: refuse new starts while the last cleanup is unverified (needs an explicit acknowledge).
-- Dashboard JS has never run in a browser or under a test.
+- Dashboard JS has never run in a browser (it is only syntax-checked with node and string-checked in tests).
 - Escalation hand-off: ESCALATED only logs and records a timeline entry.
 - LLM investigator tested with a stubbed client only; not run against the real API.
 - `allowed_actions` is built from `DEFAULT_RULES`, not the policy instance's rules.

@@ -44,7 +44,10 @@ class ChaosEngine:
         task_failure: TaskFailureExperiment | None = None,
         pipeline: Pipeline | None = None,
         scenario_factories: dict | None = None,
+        gate=None,
     ):
+        # The env gate unless the demo engine passes its own.
+        self._experiments_enabled = gate or experiments_enabled
         self.cluster = os.getenv("CHAOS_PILOT_CLUSTER", DEFAULT_CLUSTER_NAME)
         self.service = os.getenv("CHAOS_PILOT_SERVICE", DEFAULT_SERVICE_NAME)
         self.target_group_arn = os.getenv("CHAOS_PILOT_TARGET_GROUP_ARN", "")
@@ -66,7 +69,7 @@ class ChaosEngine:
                 # The policy's allow-list is the only allow-list.
                 allowed_actions=DEFAULT_RULES,
             ),
-            experiments_enabled=experiments_enabled,
+            experiments_enabled=self._experiments_enabled,
             kill_switch=KillSwitch(),
         )
         self.store = self.pipeline.store
@@ -116,14 +119,14 @@ class ChaosEngine:
         return {
             "platform": "Chaos-Pilot",
             "status": "busy" if self._running.locked() else "ready",
-            "experiments_enabled": experiments_enabled(),
+            "experiments_enabled": self._experiments_enabled(),
             "kill_switch_engaged": self.kill_switch.engaged,
             "scenarios": sorted(self.scenario_factories),
             "message": "Chaos engine is ready"
         }
 
     def run_task_failure(self, task_id: str):
-        if not experiments_enabled():
+        if not self._experiments_enabled():
             raise ExperimentNotAllowed(
                 "Experiments are disabled. "
                 "Set CHAOS_PILOT_EXPERIMENTS_ENABLED=true to allow them."
@@ -133,7 +136,7 @@ class ChaosEngine:
         return self.task_failure.stop_task(task_id)
 
     def start_scenario(self, name: str, background: bool = True) -> Incident:
-        if not experiments_enabled():
+        if not self._experiments_enabled():
             raise ExperimentNotAllowed(
                 "Experiments are disabled. "
                 "Set CHAOS_PILOT_EXPERIMENTS_ENABLED=true to allow them."

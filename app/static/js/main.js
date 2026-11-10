@@ -3,7 +3,8 @@ import { state, refresh, onChange, isActive } from "./state.js";
 import { renderSidebar } from "./components/sidebar.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderIncident } from "./views/incident.js";
-import { renderIncidents, renderReports, renderApprovals, renderScenarios, renderAnalytics } from "./views/lists.js";
+import { renderIncidents, renderReports, renderApprovals, renderScenarios } from "./views/lists.js";
+import { renderAnalytics } from "./views/analytics.js";
 
 export function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
@@ -18,8 +19,10 @@ function render() {
   const route = parseRoute();
   renderSidebar(route);
   const banners = document.getElementById("banners");
-  mount(banners, state.error
-    ? el("div", { cls: "error-banner", text: "API unreachable, retrying…", attrs: { role: "alert" } }) : null);
+  mount(banners,
+    state.config && state.config.demo
+      ? el("div", { cls: "demo-banner", text: "Demo data: sample incidents from mocked AWS", attrs: { role: "status" } }) : null,
+    state.error ? el("div", { cls: "error-banner", text: "API unreachable, retrying…", attrs: { role: "alert" } }) : null);
   const view = document.getElementById("view");
   if (!state.config && !state.error) { mount(view, el("p", { cls: "muted", text: "Loading…" })); return; }
   const nodes = {

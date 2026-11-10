@@ -6,29 +6,14 @@ import { openScenarioPicker } from "../components/picker.js";
 import { topbar, chip, scenarioCircle } from "./common.js";
 
 let chartFilter = "all";
-const FINISHED = ["RESOLVED", "FAILED", "DENIED", "REJECTED", "ESCALATED", "ABORTED"];
 
-const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-
-function metrics(finished) {
-  const resolved = finished.filter((i) => i.outcome === "RESOLVED");
-  return {
-    resolvedRate: finished.length ? resolved.length / finished.length : null,
-    mttr: avg(resolved.map((i) => i.recovery_seconds).filter((s) => s !== null)),
-    humanRate: finished.length ? finished.filter((i) => i.human_intervention).length / finished.length : null,
-  };
-}
-
-// good: whether a rise is good news. Needs 4+ finished runs: later half vs earlier half.
-function trend(finished, key, risingIsGood, format) {
-  if (finished.length < 4) return el("span", { cls: "trend flat", text: "–", attrs: { title: "Needs at least 4 finished runs for a trend" } });
-  const half = Math.floor(finished.length / 2);
-  const before = metrics(finished.slice(0, half))[key], after = metrics(finished.slice(half))[key];
-  if (before === null || after === null) return el("span", { cls: "trend flat", text: "–", attrs: { title: "Not enough data in one half" } });
-  const delta = after - before;
-  if (Math.abs(delta) < 1e-9) return el("span", { cls: "trend flat", text: "▬ no change" });
-  const good = (delta > 0) === risingIsGood;
-  return el("span", { cls: `trend ${good ? "good" : "bad"}`, text: `${delta > 0 ? "▲" : "▼"} ${format(Math.abs(delta))}`,
+function trendBadge(trend, risingIsGood, format) {
+  if (!trend || trend.direction === null) {
+    return el("span", { cls: "trend flat", text: "–", attrs: { title: "Needs at least 4 finished runs for a trend" } });
+  }
+  if (trend.direction === "flat") return el("span", { cls: "trend flat", text: "▬ no change", attrs: { title: "Within 10% of earlier runs" } });
+  const up = trend.direction === "up";
+  return el("span", { cls: `trend ${up === risingIsGood ? "good" : "bad"}`, text: `${up ? "▲" : "▼"} ${format(Math.abs(trend.delta))}`,
     attrs: { title: "Later runs compared with earlier runs" } });
 }
 
@@ -40,20 +25,20 @@ function kpiTile(label, value, sub, badge) {
   ]);
 }
 
-function kpiRow(incidents) {
-  const finished = incidents.filter((i) => FINISHED.includes(i.outcome));
-  const m = metrics(finished);
-  const active = incidents.length - finished.length;
-  const humans = incidents.filter((i) => i.human_intervention).length;
+function kpiRow() {
+  const a = state.analytics;
+  if (!a) return el("div", { cls: "kpis" }, [kpiTile("Total incidents", "–", "Loading…", null)]);
+  const t = a.totals;
+  const points = (d) => `${Math.round(d * 100)} pts`;
   return el("div", { cls: "kpis" }, [
-    kpiTile("Total incidents", String(incidents.length), incidents.length ? "since the app started" : "No incidents yet – run a scenario",
-      el("span", { cls: "trend flat", text: active ? `${active} active` : "none active" })),
-    kpiTile("Resolved", m.resolvedRate === null ? "–" : pct(m.resolvedRate), "of finished runs, verified recovery only",
-      trend(finished, "resolvedRate", true, (d) => `${Math.round(d * 100)} pts`)),
-    kpiTile("Avg time to recover", m.mttr === null ? "–" : fmtDuration(m.mttr), "MTTR, resolved runs only",
-      trend(finished, "mttr", false, (d) => fmtDuration(d))),
-    kpiTile("Human interventions", String(humans), "runs that needed a person",
-      trend(finished, "humanRate", false, (d) => `${Math.round(d * 100)} pts`)),
+    kpiTile("Total incidents", String(t.incidents), t.incidents ? "since the app started" : "No incidents yet – run a scenario",
+      el("span", { cls: "trend flat", text: t.running ? `${t.running} active` : "none active" })),
+    kpiTile("Resolved", t.resolved_pct === null ? "–" : pct(t.resolved_pct), "of finished runs, verified recovery only",
+      trendBadge(a.trends.resolved_pct, true, points)),
+    kpiTile("Avg time to recover", a.mttr.avg_seconds === null ? "–" : fmtDuration(a.mttr.avg_seconds), "MTTR, resolved runs only",
+      trendBadge(a.trends.mttr, false, fmtDuration)),
+    kpiTile("Human interventions", String(t.human_interventions), "runs that needed a person",
+      trendBadge(a.trends.human_interventions, false, points)),
   ]);
 }
 
@@ -69,13 +54,14 @@ function hero(onStarted) {
 }
 
 function recoveryChart() {
-  const incidents = state.incidents;
-  const scenarios = [...new Set(incidents.map((i) => i.scenario))];
+  const runs = state.analytics ? state.analytics.mttr.runs : [];
+  const scenarios = [...new Set(runs.map((r) => r.scenario))];
+  if (chartFilter !== "all" && !scenarios.includes(chartFilter)) chartFilter = "all";
   const select = el("select", { attrs: { "aria-label": "Filter by scenario" } }, [
     el("option", { text: "All scenarios", attrs: { value: "all" } }),
     ...scenarios.map((s) => el("option", { text: scenarioLabel(s), attrs: { value: s } })),
   ]);
-  select.value = scenarios.includes(chartFilter) ? chartFilter : "all";
+  select.value = chartFilter;
   select.addEventListener("change", () => { chartFilter = select.value; draw(); });
 
   const box = el("div", { cls: "chart-box" });
@@ -88,14 +74,18 @@ function recoveryChart() {
   function draw() {
     box.replaceChildren();
     destroyChart("recovery");
-    const rows = incidents.map((i, idx) => ({ i, n: idx + 1 }))
-      .filter(({ i }) => chartFilter === "all" || i.scenario === chartFilter);
-    const points = rows.filter(({ i }) => i.outcome === "RESOLVED" && i.recovery_seconds !== null)
-      .map(({ i, n }) => ({ n, seconds: i.recovery_seconds, id: i.incident_id, scenario: scenarioLabel(i.scenario), outcome: i.outcome, text: fmtDuration(i.recovery_seconds) }));
+    const rows = runs.filter((r) => chartFilter === "all" || r.scenario === chartFilter);
+    const points = rows.filter((r) => r.outcome === "RESOLVED" && r.recovery_seconds !== null)
+      .map((r) => ({ n: r.n, seconds: r.recovery_seconds, id: r.incident_id, scenario: scenarioLabel(r.scenario),
+        outcome: r.outcome, text: fmtDuration(r.recovery_seconds) }));
     const skipped = rows.length - points.length;
-    note.textContent = skipped ? `${skipped} run(s) not recovered or still running are not plotted.` : "";
+    const avg = points.length ? points.reduce((sum, p) => sum + p.seconds, 0) / points.length : null;
+    note.textContent = [
+      avg === null ? "" : `Average ${fmtDuration(avg)} over ${points.length} recovered run(s).`,
+      skipped ? `${skipped} run(s) not recovered or still running are not plotted.` : "",
+    ].filter(Boolean).join(" ");
     if (!points.length) {
-      box.append(el("div", { cls: "chart-note" }, [el("span", { text: incidents.length
+      box.append(el("div", { cls: "chart-note" }, [el("span", { text: runs.length
         ? "No recovered incidents to plot yet. Failed or running incidents have no recovery time."
         : "No incidents yet – run a scenario and its recovery time will appear here." })]));
       return;
@@ -165,7 +155,7 @@ export function scenarioBand(onStarted) {
 export function renderDashboard(onStarted) {
   return [
     topbar("Dashboard"),
-    el("div", { cls: "top-grid" }, [kpiRow(state.incidents), hero(onStarted)]),
+    el("div", { cls: "top-grid" }, [kpiRow(), hero(onStarted)]),
     el("div", { cls: "mid-grid" }, [recoveryChart(), recentList()]),
     scenarioBand(onStarted),
   ];

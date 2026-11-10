@@ -4,6 +4,7 @@ export const state = {
   config: null,
   incidents: [],
   scenarios: [],
+  analytics: null,
   error: false,
   // Server-computed seconds left for the incident awaiting approval, with the local time it was read.
   countdowns: {},
@@ -17,7 +18,7 @@ export function onChange(fn) {
 // Signature ignores values that tick every poll, so views re-render only on real changes.
 function signature() {
   return JSON.stringify(
-    [state.config, state.incidents, state.scenarios, state.error],
+    [state.config, state.incidents, state.scenarios, state.analytics, state.error],
     (key, value) => (key === "approval_seconds_remaining" ? undefined : value),
   );
 }
@@ -29,10 +30,11 @@ export async function refresh() {
   if (inFlight) return;
   inFlight = true;
   try {
-    const [config, incidents, scenarios] = await Promise.all([
-      api("/api/config"), api("/incidents"), api("/api/scenarios"),
+    const [config, incidents, scenarios, analytics] = await Promise.all([
+      api("/api/config"), api("/incidents"), api("/api/scenarios"), api("/api/analytics"),
     ]);
     state.config = config;
+    state.analytics = analytics;
     state.incidents = incidents;
     state.scenarios = scenarios;
     state.error = false;

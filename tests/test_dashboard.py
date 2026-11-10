@@ -1,4 +1,8 @@
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from app.main import STATIC_DIR, app
 from tests.test_scenario_api import make_client
@@ -121,3 +125,33 @@ def test_kill_switch_flow_the_dashboard_relies_on(monkeypatch):
         assert client.post("/kill-switch/release").json()["engaged"] is False
     finally:
         app.dependency_overrides.clear()
+
+
+def node_check(source: str) -> subprocess.CompletedProcess:
+    # Over stdin as a module: `node --check file.js` silently accepts a broken .js file that
+    # uses import/export (it is not parsed as a module), which would make this test pass vacuously.
+    return subprocess.run(["node", "--input-type=module", "--check"], input=source,
+                          capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not found: JS syntax check skipped")
+def test_every_js_module_parses():
+    assert node_check("import {a} from './x.js';\nconst = ;\n").returncode != 0, "syntax check is vacuous"
+    assert node_check("import {a} from './x.js';\nexport const b = 1;\n").returncode == 0
+    for path in JS_FILES:
+        result = node_check(path.read_text())
+        assert result.returncode == 0, f"{path.relative_to(STATIC_DIR)}: {result.stderr[:400]}"
+
+
+def test_analytics_page_and_demo_banner_are_wired():
+    for text in ("/api/analytics", "With the rule-based investigator, this measures the rules, not an LLM.",
+                 "Demo data: sample incidents from mocked AWS", "Is recovery getting faster?",
+                 "Did the AI identify the right problem?", "Escalated (own bucket, not counted as correct)"):
+        assert text in JS, text
+    assert "Analytics arrives in the next release" not in JS
+
+
+def test_kpis_and_recovery_chart_use_the_analytics_endpoint_not_client_maths():
+    dashboard = Path(STATIC_DIR, "js", "views", "dashboard.js").read_text()
+    assert "state.analytics" in dashboard and "mttr.runs" in dashboard
+    assert "metrics(" not in dashboard and "FINISHED" not in dashboard
